@@ -1,11 +1,13 @@
 import socket
 
 from .reply_code import ReplyCode
+from .session import Session
 
 class ControlChannel:
-    def __init__(self, data_channel):
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.data_channel = data_channel
+    def __init__(self, client_sock, session):
+        self.sock = client_sock
+        self.session = session
+        
         self.handlers = {
             "USER"  : self.handle_user,
             "PASS"  : self.handle_pass,
@@ -15,6 +17,7 @@ class ControlChannel:
             "CWD"   : self.handle_cwd,
             "CDUP"  : self.handle_cdup,
             "MKD"   : self.handle_mkd,
+            "RMD"   : self.handle_rmd,
             "LIST"  : self.handle_list,
             "NLST"  : self.handle_nlst,
             "STAT"  : self.handle_stat,
