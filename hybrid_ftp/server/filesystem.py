@@ -6,7 +6,8 @@ Handles file and directory management for the FTP server.
 
 import os
 
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+ROOT_DIR = os.path.join(DATA_DIR, "root")
 
 
 class FileSystem:

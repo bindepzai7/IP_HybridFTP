@@ -97,11 +97,11 @@ User authentication backed by `data/users.json`.
 
 ### `server/filesystem.py`
 
-Server-side file storage under `hybrid_ftp/data/`.
+Server-side file storage under `hybrid_ftp/data/root/`. User credentials stay in `data/users.json`.
 
 | Function / Method | Description |
 |---|---|
-| `__init__()` | Ensures `ROOT_DIR` (`data/`) exists. Sets `current_directory` to root. |
+| `__init__()` | Ensures `data/root/` exists. Sets `current_directory` to that folder. |
 | `resolve_path(filename)` | Joins filename with current directory and resolves to absolute path. Raises `ValueError` if path escapes `ROOT_DIR` (path traversal protection). |
 | `file_exists(filename)` | Returns `True` if the resolved path is a regular file. |
 | `read_file(filename)` | Reads and returns file contents as `bytes`. Raises `FileNotFoundError` if missing. |
@@ -186,7 +186,7 @@ Client-side `DataChannel` class (same UDP protocol as server).
 1. Client reads local file `filename`, sends `STOR filename` over TCP
 2. Server opens UDP socket, replies `150` with data endpoint
 3. Client sends file data over UDP (size header + chunks)
-4. Server saves to `data/filename`
+4. Server saves to `data/root/filename`
 5. Server replies `226 Transfer complete.` over TCP
 
 ### Download (`RETR filename`)
@@ -214,5 +214,5 @@ hybrid_ftp/
 │   ├── filesystem.py  # File read/write on disk
 │   ├── data.py        # UDP file transfer (server side)
 │   └── reply_code.py  # FTP reply code constants
-└── data/              # Server file storage + users.json
+└── data/              # users.json + root/ for uploaded files
 ```
