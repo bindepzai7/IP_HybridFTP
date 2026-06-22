@@ -1,7 +1,6 @@
-import socket
-
-from .reply_code import ReplyCode
-from .session import Session
+from reply_code import ReplyCode, DefaultMessage
+from session import Session
+from auth import Authenticator
 
 class ControlChannel:
     def __init__(self, client_sock, session):
@@ -39,18 +38,102 @@ class ControlChannel:
             "HELP"  : self.handle_help,
         }
         
-    def process_command(self, line):
-        pass
+    def _process_command(self, line):
+        line = line.strip()
+
+        if not line:
+            self._send_response(ReplyCode.CommandSyntaxError)
+            return None
+
+        cmd, _, arg = line.partition(" ")
+        cmd = cmd.upper()
+        arg = arg.strip()
+
+        handler = self.handlers.get(cmd)
+
+        if handler is None:
+            self._send_response(ReplyCode.CommandNotImplemented)
+            return None
+
+        return handler(arg)
     
-    def send_response(self, code, custom_msg):
-        pass
+    def _send_response(self, code, custom_msg=None):
+        if custom_msg is None:
+            msg = DefaultMessage[code]
+        else:
+            msg = custom_msg
+
+        response = f"{int(code)} {msg}\r\n"
+        self.sock.sendall(response.encode())
+        # print(response)
+        
+    def run(self):
+        self._send_response(ReplyCode.SendUserCommand)
+
+        while True:
+            data = self.sock.recv(1024)
+            if not data:
+                break
+
+            line = data.decode().strip()
+            action = self._process_command(line)
+
+            if action == "CLOSE":
+                break
+
+        self.sock.close()
     
-    def handle_user(self, args): 
-        pass
-    def handle_pass(self, args): 
-        pass
-    def handle_quit(self, args): 
-        pass
+    def handle_user(self, line):
+        username = line.strip()
+
+        if not username:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return
+
+        if self.session.logged_in:
+            self._send_response(
+                ReplyCode.BadCommandSequence,
+                "Already logged in."
+            )
+            return
+
+        if not self.session.authenticator.user_exists(username):
+            self._send_response(
+                ReplyCode.NotLoggedIn,
+                "Invalid username."
+            )
+            return
+
+        self.session.set_user(username)
+
+        self._send_response(
+            ReplyCode.SendPasswordCommand
+        )
+        
+    def handle_pass(self, line): 
+        password = line.strip()
+        if self.session.username is None:
+            self._send_response(ReplyCode.BadCommandSequence)
+            return None
+        
+        ok = self.session.authenticator.authenticate(self.session.username, password)
+        
+        if not ok:
+            self._send_response(ReplyCode.NotLoggedIn)
+            return None
+        
+        self.session.login()
+        self._send_response(ReplyCode.LoggedInProceed)
+        
+    def handle_quit(self, line): 
+        if line:
+            self._send_response(ReplyCode.CommandSyntaxError)
+            return 
+        
+        self.session.logout()
+        self._send_response(ReplyCode.ClosingControl)
+        return "CLOSE"
+        
     def handle_noop(self, args): 
         pass
     def handle_pwd(self, args): 
@@ -101,3 +184,13 @@ class ControlChannel:
         pass
     def handle_help(self, args): 
         pass
+    
+if __name__ == "__main__":
+    auth = Authenticator()
+    # auth.add_user("alice", "123")
+
+    session = Session(auth)
+    control = ControlChannel(None, session)
+    control.handle_user("alice")
+    control.handle_pass("123")
+    control._process_command("QUIT")
