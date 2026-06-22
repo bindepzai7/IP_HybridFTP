@@ -149,17 +149,18 @@ No functions — this file is pure data/constants.
 
 ### `client/client.py`
 
-Interactive FTP client with a command-line interface.
+Interactive FTP client with a command-line interface. Local files are read/written under `hybrid_ftp/client/storage/`.
 
 | Function / Method | Description |
 |---|---|
-| `FTPClient.__init__(host, port, retry)` | Opens a TCP connection to the server (retries up to 5 times). Reads and prints the initial `220` greeting. |
+| `FTPClient.__init__(host, port, retry)` | Creates `storage/` if needed, opens TCP connection to the server (retries up to 5 times). Reads and prints the initial `220` greeting. |
+| `_storage_path(filename)` | Resolves a filename inside `client/storage/` and blocks path traversal. |
 | `_read_response()` | Reads from the TCP socket until a complete FTP response line is received (ends at `\r\n` after the status line). Handles multi-line responses. |
 | `_response_code(response)` | Extracts the 3-digit numeric code from a response string (e.g. `"150 ..."` → `150`). |
 | `send(cmd)` | Sends a command over TCP, reads and prints the response. Returns the response string. |
 | `_parse_data_endpoint(response)` | Extracts `(h1,h2,h3,h4,p1,p2)` from a `150` response and sets `self.data_host` / `self.data_port`. |
-| `upload(local_path, remote_name)` | Reads local file, sends `STOR`, parses data endpoint from `150`, sends file over UDP via `send_bytes`, waits for `226`. |
-| `download(remote_name, local_path)` | Sends `RETR`, parses endpoint from `150`, sends `READY` probe, receives file over UDP via `recv_bytes`, saves locally, waits for `226`. |
+| `upload(filename, remote_name)` | Reads `storage/filename`, sends `STOR`, transfers over UDP. |
+| `download(remote_name, local_filename)` | Sends `RETR`, receives over UDP, saves to `storage/`. |
 | `close()` | Closes the TCP control socket. |
 | `main()` | Runs the interactive `ftp>` prompt. `STOR` and `RETR` trigger the full UDP transfer; other commands are sent over TCP as-is. |
 
@@ -183,7 +184,7 @@ Client-side `DataChannel` class (same UDP protocol as server).
 
 ### Upload (`STOR filename`)
 
-1. Client reads local file `filename`, sends `STOR filename` over TCP
+1. Client reads `storage/filename`, sends `STOR filename` over TCP
 2. Server opens UDP socket, replies `150` with data endpoint
 3. Client sends file data over UDP (size header + chunks)
 4. Server saves to `data/root/filename`
@@ -194,7 +195,7 @@ Client-side `DataChannel` class (same UDP protocol as server).
 1. Client sends `RETR filename` over TCP
 2. Server opens UDP socket, replies `150` with endpoint
 3. Client sends `READY` probe, server sends file over UDP
-4. Client saves to local `filename`
+4. Client saves to `storage/filename`
 5. Server replies `226 Transfer complete.` over TCP
 
 ---
@@ -205,7 +206,8 @@ Client-side `DataChannel` class (same UDP protocol as server).
 hybrid_ftp/
 ├── client/
 │   ├── client.py      # TCP client + CLI
-│   └── data.py        # UDP send/receive (client side)
+│   ├── data.py        # UDP send/receive (client side)
+│   └── storage/       # Local files for STOR/RETR
 ├── server/
 │   ├── server.py      # TCP server entry point
 │   ├── control.py     # Command dispatch + handlers

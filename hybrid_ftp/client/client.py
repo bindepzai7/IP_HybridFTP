@@ -5,9 +5,12 @@ import time
 
 from data import DataChannel
 
+STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
+
 
 class FTPClient:
     def __init__(self, host="127.0.0.1", port=2121, retry=5):
+        os.makedirs(STORAGE_DIR, exist_ok=True)
         self.host = host
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -29,6 +32,12 @@ class FTPClient:
         self.data_port = None
 
         print(self._read_response())
+
+    def _storage_path(self, filename: str) -> str:
+        path = os.path.abspath(os.path.join(STORAGE_DIR, filename))
+        if not path.startswith(STORAGE_DIR):
+            raise ValueError("Path outside storage directory")
+        return path
 
     def _read_response(self):
         lines = []
@@ -70,8 +79,9 @@ class FTPClient:
         self.data_host = host
         self.data_port = port
 
-    def upload(self, local_path: str, remote_name: str | None = None):
-        remote_name = remote_name or os.path.basename(local_path)
+    def upload(self, filename: str, remote_name: str | None = None):
+        local_path = self._storage_path(filename)
+        remote_name = remote_name or os.path.basename(filename)
         if not os.path.isfile(local_path):
             raise FileNotFoundError(local_path)
 
@@ -95,8 +105,9 @@ class FTPClient:
         print(f"<<< {response}")
         return response
 
-    def download(self, remote_name: str, local_path: str | None = None):
-        local_path = local_path or remote_name
+    def download(self, remote_name: str, local_filename: str | None = None):
+        local_filename = local_filename or remote_name
+        local_path = self._storage_path(local_filename)
 
         response = self.send(f"RETR {remote_name}")
         if self._response_code(response) != 150:

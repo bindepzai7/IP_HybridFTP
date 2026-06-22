@@ -223,4 +223,4 @@ data/
 Project1_SocketProgramming_2026.pdf
 
 # Data in client
-hybrid_ftp/client/*.txt
+hybrid_ftp/client/storage/
