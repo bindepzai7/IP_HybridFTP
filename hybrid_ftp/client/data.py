@@ -52,17 +52,7 @@ def _send_ack(sock: socket.socket, peer_addr, seq: int) -> None:
     sock.sendto(packet, peer_addr)
 
 
-def _wait_for_peer(sock: socket.socket, timeout: float = DEFAULT_TIMEOUT) -> tuple:
-    sock.settimeout(timeout)
-    while True:
-        try:
-            _, addr = sock.recvfrom(HEADER_SIZE + MAX_PAYLOAD)
-            return addr
-        except socket.timeout:
-            raise TimeoutError("Timed out waiting for data connection")
-
-
-def _send_bytes(sock: socket.socket, data: bytes, peer_addr, timeout: float = DEFAULT_TIMEOUT) -> None:
+def send_bytes(sock: socket.socket, data: bytes, peer_addr, timeout: float = DEFAULT_TIMEOUT) -> None:
     sock.settimeout(timeout)
     seq = 0
     offset = 0
@@ -100,7 +90,7 @@ def _send_bytes(sock: socket.socket, data: bytes, peer_addr, timeout: float = DE
     raise TimeoutError("Failed to deliver end-of-transfer packet after retries")
 
 
-def _recv_bytes(sock: socket.socket, timeout: float = DEFAULT_TIMEOUT) -> tuple[bytes, tuple]:
+def recv_bytes(sock: socket.socket, timeout: float = DEFAULT_TIMEOUT) -> tuple[bytes, tuple]:
     sock.settimeout(timeout)
     chunks = []
     expected_seq = 0
@@ -140,18 +130,3 @@ def _recv_bytes(sock: socket.socket, timeout: float = DEFAULT_TIMEOUT) -> tuple[
         expected_seq ^= 1
 
     return b"".join(chunks), peer_addr
-
-
-class DataChannel:
-    def __init__(self, data_socket: socket.socket):
-        self.udp_socket = data_socket
-
-    def send_file(self, data: bytes) -> None:
-        peer_addr = _wait_for_peer(self.udp_socket)
-        _send_bytes(self.udp_socket, data, peer_addr)
-        print(f"[data] Sent {len(data)} bytes to {peer_addr}")
-
-    def receive_file(self) -> bytes:
-        data, peer_addr = _recv_bytes(self.udp_socket)
-        print(f"[data] Received {len(data)} bytes from {peer_addr}")
-        return data

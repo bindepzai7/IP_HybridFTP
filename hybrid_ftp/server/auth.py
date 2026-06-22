@@ -3,10 +3,11 @@ import json
 import hashlib
 
 class Authenticator:
-    USER_FILE = "../data/users.json"
-    
+    DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+    USER_FILE = os.path.join(DATA_DIR, "users.json")
+
     def __init__(self):
-        os.makedirs("../data", exist_ok=True)
+        os.makedirs(self.DATA_DIR, exist_ok=True)
 
         if not os.path.exists(self.USER_FILE):
             with open(self.USER_FILE, "w") as f:

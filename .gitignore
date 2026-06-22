@@ -221,3 +221,6 @@ data/
 
 # Project requirements
 Project1_SocketProgramming_2026.pdf
+
+# Data in client
+hybrid_ftp/client/*.txt
