@@ -22,6 +22,10 @@ class Authenticator:
         
     def _hash_password(self, password):
         return hashlib.sha256(password.encode()).hexdigest()
+    
+    def user_exists(self, username):
+        data = self._load_users()
+        return username in data["users"]
         
     def add_user(self, username, password):
         data = self._load_users()
@@ -38,19 +42,28 @@ class Authenticator:
         
     def remove_user(self, username):
         data = self._load_users()
+        
         if username not in data["users"]:
             return False
+        del data["users"][username]
+        
         self._save_users(data)
         return True
         
     def authenticate(self, username, password):
         data = self._load_users()
-        if username not in data["users"]:
+
+        user = data["users"].get(username)
+        if not user:
             return False
-        password_hash = self._hash_password(password)
-        return data["users"]["password_hash"] == password_hash
+
+        return user["password_hash"] == self._hash_password(password)
            
         
 if __name__ == "__main__":
     authenticator = Authenticator()
     authenticator.add_user("Tuan", "123")
+    print(authenticator.user_exists("Tuan"))
+    print(authenticator.authenticate("Tuan", "123"))
+    authenticator.remove_user("Tuan")
+    print(authenticator.user_exists("Tuan"))
