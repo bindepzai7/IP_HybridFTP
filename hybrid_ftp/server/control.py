@@ -89,6 +89,19 @@ class ControlChannel:
             return False
         return True
 
+    def _parse_filename(self, args: str) -> str | None:
+        filename = args.strip()
+        if not filename:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return None
+        if " " in filename:
+            self._send_response(
+                ReplyCode.ArgumentSyntaxError,
+                "Filename must be a single name without spaces.",
+            )
+            return None
+        return filename
+
     def _data_host_for_reply(self) -> str:
         if self.session.data_host:
             return self.session.data_host
@@ -191,9 +204,8 @@ class ControlChannel:
         if not self._require_login():
             return
 
-        filename = args.strip()
-        if not filename:
-            self._send_response(ReplyCode.ArgumentSyntaxError)
+        filename = self._parse_filename(args)
+        if filename is None:
             return
 
         if not self.fs.file_exists(filename):
@@ -208,7 +220,7 @@ class ControlChannel:
             endpoint = self._format_data_endpoint(host, port)
             self._send_response(
                 ReplyCode.OpeningData,
-                f"Opening data connection for {filename} {endpoint}.",
+                f'Opening data connection for "{filename}". Endpoint {endpoint}.',
             )
 
             channel = DataChannel(self.session.data_socket)
@@ -224,9 +236,8 @@ class ControlChannel:
         if not self._require_login():
             return
 
-        filename = args.strip()
-        if not filename:
-            self._send_response(ReplyCode.ArgumentSyntaxError)
+        filename = self._parse_filename(args)
+        if filename is None:
             return
 
         try:
@@ -234,7 +245,7 @@ class ControlChannel:
             endpoint = self._format_data_endpoint(host, port)
             self._send_response(
                 ReplyCode.OpeningData,
-                f"Ready to receive {filename} {endpoint}.",
+                f'Ready to receive "{filename}". Endpoint {endpoint}.',
             )
 
             channel = DataChannel(self.session.data_socket)

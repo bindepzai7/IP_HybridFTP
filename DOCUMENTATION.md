@@ -166,7 +166,7 @@ Interactive FTP client with a command-line interface.
 | `upload(local_path, remote_name)` | Reads local file, sends `STOR`, parses data endpoint from `150`, sends file over UDP via `send_bytes`, waits for `226`. |
 | `download(remote_name, local_path)` | Sends `RETR`, parses endpoint from `150`, sends `READY` probe, receives file over UDP via `recv_bytes`, saves locally, waits for `226`. |
 | `close()` | Closes the TCP control socket. |
-| `main()` | Runs the interactive `ftp>` prompt. Supports raw FTP commands plus convenience aliases `put` and `get`. |
+| `main()` | Runs the interactive `ftp>` prompt. `STOR` and `RETR` trigger the full UDP transfer; other commands are sent over TCP as-is. |
 
 ---
 
@@ -183,20 +183,20 @@ Client-side UDP transfer (same simple protocol as server `data.py`).
 
 ## Typical Transfer Flow
 
-### Upload (`put local.txt remote.txt`)
+### Upload (`STOR filename`)
 
-1. Client sends `STOR remote.txt` over TCP
-2. Server opens UDP socket, replies `150 Ready to receive remote.txt (127,0,0,1,p1,p2).`
-3. Client parses endpoint, sends file data over UDP (size header + chunks)
-4. Server receives data, saves to `data/remote.txt`
+1. Client reads local file `filename`, sends `STOR filename` over TCP
+2. Server opens UDP socket, replies `150` with data endpoint
+3. Client sends file data over UDP (size header + chunks)
+4. Server saves to `data/filename`
 5. Server replies `226 Transfer complete.` over TCP
 
-### Download (`get remote.txt local.txt`)
+### Download (`RETR filename`)
 
-1. Client sends `RETR remote.txt` over TCP
-2. Server opens UDP socket, replies `150 Opening data connection for remote.txt (127,0,0,1,p1,p2).`
+1. Client sends `RETR filename` over TCP
+2. Server opens UDP socket, replies `150` with endpoint
 3. Client sends `READY` probe, server sends file over UDP
-4. Client saves received bytes to `local.txt`
+4. Client saves to local `filename`
 5. Server replies `226 Transfer complete.` over TCP
 
 ---

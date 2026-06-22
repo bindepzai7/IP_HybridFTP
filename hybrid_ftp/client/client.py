@@ -143,30 +143,26 @@ def main():
                     print(client.send("QUIT"))
                 break
 
-            if lower.startswith("put "):
-                parts = line.split(maxsplit=2)
-                if len(parts) < 2:
-                    print("Usage: put <local_file> [remote_name]")
-                    continue
-                local_path = parts[1]
-                remote_name = parts[2] if len(parts) == 3 else None
-                try:
-                    client.upload(local_path, remote_name)
-                except Exception as exc:
-                    print(f"Upload failed: {exc}")
+            tokens = line.split()
+            cmd = tokens[0].upper() if tokens else ""
+            if cmd == "STOR":
+                if len(tokens) == 2:
+                    try:
+                        client.upload(tokens[1])
+                    except Exception as exc:
+                        print(f"Upload failed: {exc}")
+                else:
+                    print("Usage: STOR <filename>")
                 continue
 
-            if lower.startswith("get "):
-                parts = line.split(maxsplit=2)
-                if len(parts) < 2:
-                    print("Usage: get <remote_file> [local_file]")
-                    continue
-                remote_name = parts[1]
-                local_path = parts[2] if len(parts) == 3 else None
-                try:
-                    client.download(remote_name, local_path)
-                except Exception as exc:
-                    print(f"Download failed: {exc}")
+            if cmd == "RETR":
+                if len(tokens) == 2:
+                    try:
+                        client.download(tokens[1])
+                    except Exception as exc:
+                        print(f"Download failed: {exc}")
+                else:
+                    print("Usage: RETR <filename>")
                 continue
 
             response = client.send(line)
