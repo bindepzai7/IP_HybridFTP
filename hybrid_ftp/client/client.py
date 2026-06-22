@@ -3,7 +3,7 @@ import re
 import socket
 import time
 
-from data import send_bytes, recv_bytes
+from data import DataChannel
 
 
 class FTPClient:
@@ -84,14 +84,12 @@ class FTPClient:
 
         self._parse_data_endpoint(response)
         print(f"[data] Data endpoint {self.data_host}:{self.data_port}")
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(30.0)
         peer = (self.data_host, self.data_port)
 
         print(f"[data] Uploading {len(data)} bytes...")
-        send_bytes(sock, data, peer)
-        sock.close()
+        channel = DataChannel(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), peer)
+        channel.send(data)
+        channel.close()
 
         response = self._read_response()
         print(f"<<< {response}")
@@ -106,15 +104,13 @@ class FTPClient:
 
         self._parse_data_endpoint(response)
         print(f"[data] Data endpoint {self.data_host}:{self.data_port}")
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(30.0)
         peer = (self.data_host, self.data_port)
 
-        sock.sendto(b"READY", peer)
+        channel = DataChannel(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), peer)
+        channel.signal_ready()
         print("[data] Downloading...")
-        data, _ = recv_bytes(sock, timeout=30.0)
-        sock.close()
+        data = channel.receive()
+        channel.close()
 
         with open(local_path, "wb") as f:
             f.write(data)

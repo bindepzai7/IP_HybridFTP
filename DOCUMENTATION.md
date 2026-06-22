@@ -119,21 +119,16 @@ UDP data channel for basic-level file transfer (no RDT).
 2. Following datagrams: raw payload chunks (up to 1024 bytes each)
 3. No sequence numbers, ACKs, checksums, or retransmission
 
-#### Functions
-
-| Function | Description |
-|---|---|
-| `_wait_for_peer(sock, timeout)` | Blocks until any UDP datagram arrives; returns sender address. Used before server-initiated send (download). |
-| `_send_bytes(sock, data, peer_addr)` | Sends size header, then all file chunks via `sendto`. |
-| `_recv_bytes(sock, timeout)` | Reads size header, then chunks until full file is received. Returns `(data, peer_addr)`. |
-
 #### `DataChannel` class
 
 | Method | Description |
 |---|---|
-| `__init__(data_socket)` | Wraps the session's UDP socket. |
-| `send_file(data)` | Waits for client to connect (`_wait_for_peer`), then sends file bytes. |
-| `receive_file()` | Receives file bytes with `_recv_bytes` and returns them. |
+| `__init__(data_socket, timeout)` | Wraps the session UDP socket and sets receive timeout. |
+| `_wait_for_peer()` | Blocks until a datagram arrives; returns sender address. |
+| `_send_bytes(data, peer_addr)` | Sends size header then file chunks to the peer. |
+| `_recv_bytes()` | Reads size header then chunks; returns `(data, peer_addr)`. |
+| `send_file(data)` | Waits for client, then sends the full file. |
+| `receive_file()` | Receives the full file and returns its bytes. |
 
 ---
 
@@ -172,12 +167,15 @@ Interactive FTP client with a command-line interface.
 
 ### `client/data.py`
 
-Client-side UDP transfer (same simple protocol as server `data.py`).
+Client-side `DataChannel` class (same UDP protocol as server).
 
-| Function | Description |
+| Method | Description |
 |---|---|
-| `send_bytes(sock, data, peer_addr)` | Sends size header, then file chunks via `sendto`. |
-| `recv_bytes(sock, timeout)` | Reads size header, then chunks until full file received. Returns `(data, peer_addr)`. |
+| `__init__(udp_socket, peer_addr, timeout)` | Stores socket, server endpoint, and timeout. |
+| `send(data)` | Sends size header then file chunks to the server. |
+| `signal_ready()` | Sends `READY` probe so server knows client address (download). |
+| `receive()` | Reads size header then chunks; returns file bytes. |
+| `close()` | Closes the UDP socket. |
 
 ---
 

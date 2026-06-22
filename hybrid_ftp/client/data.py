@@ -12,29 +12,39 @@ MAX_PAYLOAD = 1024
 DEFAULT_TIMEOUT = 30.0
 
 
-def send_bytes(sock: socket.socket, data: bytes, peer_addr) -> None:
-    sock.sendto(struct.pack("!I", len(data)), peer_addr)
-    offset = 0
-    while offset < len(data):
-        chunk = data[offset : offset + MAX_PAYLOAD]
-        sock.sendto(chunk, peer_addr)
-        offset += len(chunk)
+class DataChannel:
+    def __init__(self, udp_socket: socket.socket, peer_addr, timeout: float = DEFAULT_TIMEOUT):
+        self.udp_socket = udp_socket
+        self.peer_addr = peer_addr
+        self.timeout = timeout
+        self.udp_socket.settimeout(timeout)
 
+    def send(self, data: bytes) -> None:
+        self.udp_socket.sendto(struct.pack("!I", len(data)), self.peer_addr)
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset : offset + MAX_PAYLOAD]
+            self.udp_socket.sendto(chunk, self.peer_addr)
+            offset += len(chunk)
 
-def recv_bytes(sock: socket.socket, timeout: float = DEFAULT_TIMEOUT) -> tuple[bytes, tuple]:
-    sock.settimeout(timeout)
+    def signal_ready(self) -> None:
+        self.udp_socket.sendto(b"READY", self.peer_addr)
 
-    meta, addr = sock.recvfrom(4)
-    if len(meta) < 4:
-        raise ValueError("Invalid size header")
+    def receive(self) -> bytes:
+        meta, _ = self.udp_socket.recvfrom(4)
+        if len(meta) < 4:
+            raise ValueError("Invalid size header")
 
-    total = struct.unpack("!I", meta)[0]
-    chunks = []
-    received = 0
+        total = struct.unpack("!I", meta)[0]
+        chunks = []
+        received = 0
 
-    while received < total:
-        chunk, _ = sock.recvfrom(MAX_PAYLOAD)
-        chunks.append(chunk)
-        received += len(chunk)
+        while received < total:
+            chunk, _ = self.udp_socket.recvfrom(MAX_PAYLOAD)
+            chunks.append(chunk)
+            received += len(chunk)
 
-    return b"".join(chunks)[:total], addr
+        return b"".join(chunks)[:total]
+
+    def close(self) -> None:
+        self.udp_socket.close()
