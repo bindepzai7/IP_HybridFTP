@@ -10,8 +10,6 @@ BASIC_COMMANDS = (
     "PASS <password>",
     "QUIT",
     "NOOP",
-    "TYPE A",
-    "MODE S",
     "RETR <filename>",
     "STOR <filename>",
     "HELP [command]",
@@ -40,8 +38,8 @@ class ControlChannel:
             "STAT": self.handle_not_implemented,
             "SIZE": self.handle_not_implemented,
             "MDTM": self.handle_not_implemented,
-            "TYPE": self.handle_type,
-            "MODE": self.handle_mode,
+            "TYPE": self.handle_not_implemented,
+            "MODE": self.handle_not_implemented,
             "PORT": self.handle_not_implemented,
             "PASV": self.handle_not_implemented,
             "RETR": self.handle_retr,
@@ -189,33 +187,6 @@ class ControlChannel:
     def handle_noop(self, _args):
         self._send_response(ReplyCode.CommandOK)
 
-    def handle_type(self, args):
-        if not self._require_login():
-            return
-
-        mode = args.strip().upper()
-        if mode == "A":
-            self.session.transfer_type = "A"
-            self._send_response(ReplyCode.CommandOK, "Type set to ASCII.")
-        elif mode == "I":
-            self._send_response(ReplyCode.CommandNotImplemented, "Binary type requires advanced level.")
-        else:
-            self._send_response(ReplyCode.ArgumentSyntaxError, "TYPE must be A or I.")
-
-    def handle_mode(self, args):
-        if not self._require_login():
-            return
-
-        mode = args.strip().upper()
-        if mode == "S":
-            self.session.transfer_mode = "S"
-            self._send_response(ReplyCode.CommandOK, "Mode set to Stream.")
-        else:
-            self._send_response(
-                ReplyCode.CommandNotImplemented,
-                "Only stream mode (S) is supported at basic level.",
-            )
-
     def handle_retr(self, args):
         if not self._require_login():
             return
@@ -231,8 +202,7 @@ class ControlChannel:
 
         try:
             file_data = self.fs.read_file(filename)
-            if self.session.transfer_type == "A":
-                file_data = file_data.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
+            file_data = file_data.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
 
             host, port = self._open_data_channel()
             endpoint = self._format_data_endpoint(host, port)
@@ -269,9 +239,7 @@ class ControlChannel:
 
             channel = DataChannel(self.session.data_socket)
             file_data = channel.receive_file()
-
-            if self.session.transfer_type == "A":
-                file_data = file_data.replace(b"\r\n", b"\n")
+            file_data = file_data.replace(b"\r\n", b"\n")
 
             self.fs.write_file(filename, file_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete.")

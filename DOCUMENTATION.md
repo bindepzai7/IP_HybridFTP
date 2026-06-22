@@ -1,6 +1,6 @@
 # Hybrid FTP — Code Documentation
 
-This document explains how each function in the main project files works. The application uses **TCP** for the control channel (commands/responses) and **UDP** with a custom stop-and-wait protocol for file transfers.
+This document explains how each function in the main project files works. The application uses **TCP** for the control channel (commands/responses) and **UDP** for file transfers.
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ Client (client.py)                    Server (server.py)
       │──── TCP :2121 (USER, PASS, STOR…) ──►│ control.py
       │◄─── FTP reply codes (220, 150, 226) ─│
       │                                      │
-      │──── UDP (reliable file payload) ─────►│ data.py
+      │──── UDP (file payload) ────────────────►│ data.py
 ```
 
 At basic level, the data channel is opened **implicitly** when `STOR` or `RETR` runs — no `PASV`/`PORT` command is required from the user.
@@ -57,10 +57,8 @@ Handles all FTP commands over the TCP control connection.
 | `handle_pass(line)` | Verifies password hash. On success, marks session logged in (`230`). On failure, clears username (`530`). |
 | `handle_quit(line)` | Logs out, sends `221`, returns `"CLOSE"` to end the session loop. |
 | `handle_noop(_args)` | No-operation keep-alive. Replies `200`. |
-| `handle_type(args)` | Sets transfer type. `TYPE A` (ASCII) is supported; `TYPE I` (binary) returns `502`. |
-| `handle_mode(args)` | Sets transfer mode. Only `MODE S` (stream) is supported at basic level. |
-| `handle_retr(args)` | **Download.** Reads file from disk, opens UDP channel, sends `150` with data endpoint, transmits file over UDP, then `226`. Converts `\n` → `\r\n` in ASCII mode. |
-| `handle_stor(args)` | **Upload.** Opens UDP channel, sends `150` with endpoint, receives file over UDP, saves to disk, then `226`. Converts `\r\n` → `\n` in ASCII mode. |
+| `handle_retr(args)` | **Download.** Reads file from disk, opens UDP channel, sends `150` with data endpoint, transmits file over UDP, then `226`. Converts `\n` → `\r\n` (ASCII). |
+| `handle_stor(args)` | **Upload.** Opens UDP channel, sends `150` with endpoint, receives file over UDP, saves to disk, then `226`. Converts `\r\n` → `\n` (ASCII). |
 | `handle_help(args)` | Lists supported basic commands, or shows syntax for a specific command. |
 | `handle_not_implemented(_args)` | Returns `502` for advanced commands (`LIST`, `CWD`, `PASV`, `PORT`, etc.). |
 
@@ -72,7 +70,7 @@ Tracks per-client state for one control connection.
 
 | Function / Method | Description |
 |---|---|
-| `__init__(authenticator)` | Creates a unique session ID (`uuid`), stores auth reference, and initializes defaults: not logged in, `TYPE A`, `MODE S`, no data socket. |
+| `__init__(authenticator)` | Creates a unique session ID (`uuid`), stores auth reference, and initializes defaults: not logged in, no data socket. ASCII stream transfer is always used implicitly. |
 | `set_user(username)` | Stores the username pending password verification. |
 | `login()` | Sets `logged_in = True` after successful `PASS`. |
 | `logout()` | Clears username and login flag on `QUIT`. |
@@ -113,33 +111,28 @@ Server-side file storage under `hybrid_ftp/data/`.
 
 ### `server/data.py`
 
-UDP data channel with stop-and-wait reliability (RDT).
+UDP data channel for basic-level file transfer (no RDT).
 
-#### Packet format
+#### Protocol
 
-Each UDP datagram: `seq (4B) | flags (1B) | length (2B) | checksum (4B) | payload (≤1024B)`
-
-- **Flags:** `DATA=0`, `ACK=1`, `FIN=2`
-- **Checksum:** CRC32 of payload for corruption detection
-- **Sequence:** Alternates 0/1 per chunk (stop-and-wait)
+1. First datagram: 4-byte big-endian total file size
+2. Following datagrams: raw payload chunks (up to 1024 bytes each)
+3. No sequence numbers, ACKs, checksums, or retransmission
 
 #### Functions
 
 | Function | Description |
 |---|---|
-| `_pack_packet(seq, flags, payload)` | Builds a binary packet with header + payload. |
-| `_unpack_packet(data)` | Parses and validates a packet. Returns `(seq, flags, payload)` or `None` if corrupt/incomplete. |
-| `_send_ack(sock, peer_addr, seq)` | Sends an ACK packet for the given sequence number. |
 | `_wait_for_peer(sock, timeout)` | Blocks until any UDP datagram arrives; returns sender address. Used before server-initiated send (download). |
-| `_send_bytes(sock, data, peer_addr, timeout)` | Reliably sends all bytes using stop-and-wait: send chunk → wait ACK → toggle seq → repeat. Ends with a `FIN` packet. Retries up to 10 times per packet. |
-| `_recv_bytes(sock, timeout)` | Reliably receives all bytes: validate seq/checksum, ACK each packet, assemble chunks until `FIN`. Returns `(data, peer_addr)`. |
+| `_send_bytes(sock, data, peer_addr)` | Sends size header, then all file chunks via `sendto`. |
+| `_recv_bytes(sock, timeout)` | Reads size header, then chunks until full file is received. Returns `(data, peer_addr)`. |
 
 #### `DataChannel` class
 
 | Method | Description |
 |---|---|
 | `__init__(data_socket)` | Wraps the session's UDP socket. |
-| `send_file(data)` | Waits for client to connect (`_wait_for_peer`), then sends file bytes with `_send_bytes`. |
+| `send_file(data)` | Waits for client to connect (`_wait_for_peer`), then sends file bytes. |
 | `receive_file()` | Receives file bytes with `_recv_bytes` and returns them. |
 
 ---
@@ -179,15 +172,12 @@ Interactive FTP client with a command-line interface.
 
 ### `client/data.py`
 
-Client-side UDP reliability layer (same protocol as server `data.py`).
+Client-side UDP transfer (same simple protocol as server `data.py`).
 
 | Function | Description |
 |---|---|
-| `_pack_packet(seq, flags, payload)` | Same as server — builds a binary UDP packet. |
-| `_unpack_packet(data)` | Same as server — parses and validates a packet. |
-| `_send_ack(sock, peer_addr, seq)` | Sends an ACK packet. |
-| `send_bytes(sock, data, peer_addr, timeout)` | Public API. Reliably sends all bytes to the server using stop-and-wait ARQ. |
-| `recv_bytes(sock, timeout)` | Public API. Reliably receives all bytes from the server. Returns `(data, peer_addr)`. |
+| `send_bytes(sock, data, peer_addr)` | Sends size header, then file chunks via `sendto`. |
+| `recv_bytes(sock, timeout)` | Reads size header, then chunks until full file received. Returns `(data, peer_addr)`. |
 
 ---
 
@@ -197,7 +187,7 @@ Client-side UDP reliability layer (same protocol as server `data.py`).
 
 1. Client sends `STOR remote.txt` over TCP
 2. Server opens UDP socket, replies `150 Ready to receive remote.txt (127,0,0,1,p1,p2).`
-3. Client parses endpoint, sends file data over UDP (stop-and-wait)
+3. Client parses endpoint, sends file data over UDP (size header + chunks)
 4. Server receives data, saves to `data/remote.txt`
 5. Server replies `226 Transfer complete.` over TCP
 
@@ -224,7 +214,7 @@ hybrid_ftp/
 │   ├── session.py     # Per-client session state
 │   ├── auth.py        # User authentication
 │   ├── filesystem.py  # File read/write on disk
-│   ├── data.py        # UDP transfer + RDT (server side)
+│   ├── data.py        # UDP file transfer (server side)
 │   └── reply_code.py  # FTP reply code constants
 └── data/              # Server file storage + users.json
 ```

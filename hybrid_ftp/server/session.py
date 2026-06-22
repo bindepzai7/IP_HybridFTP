@@ -9,9 +9,6 @@ class Session:
         self.username = None
         self.logged_in = False
 
-        self.transfer_type = "A"
-        self.transfer_mode = "S"
-
         self.data_socket = None
         self.data_port = None
         self.data_host = None
