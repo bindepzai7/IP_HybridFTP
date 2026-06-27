@@ -57,8 +57,9 @@ Handles all FTP commands over the TCP control connection.
 | `handle_pass(line)` | Verifies password hash. On success, marks session logged in (`230`). On failure, clears username (`530`). |
 | `handle_quit(line)` | Logs out, sends `221`, returns `"CLOSE"` to end the session loop. |
 | `handle_noop(_args)` | No-operation keep-alive. Replies `200`. |
-| `handle_retr(args)` | **Download.** Reads file from disk, opens UDP channel, sends `150` with data endpoint, transmits file over UDP, then `226`. Converts `\n` → `\r\n` (ASCII). |
-| `handle_stor(args)` | **Upload.** Opens UDP channel, sends `150` with endpoint, receives file over UDP, saves to disk, then `226`. Converts `\r\n` → `\n` (ASCII). |
+| `handle_type(args)` | Sets transfer type: `TYPE A` (ASCII, line-ending conversion) or `TYPE I` (binary, raw bytes). |
+| `handle_retr(args)` | **Download.** Reads file, applies ASCII conversion only when `TYPE A`, sends over UDP, then `226`. |
+| `handle_stor(args)` | **Upload.** Receives over UDP, applies ASCII conversion only when `TYPE A`, saves to disk, then `226`. |
 | `handle_help(args)` | Lists supported basic commands, or shows syntax for a specific command. |
 | `handle_not_implemented(_args)` | Returns `502` for advanced commands (`LIST`, `CWD`, `PASV`, `PORT`, etc.). |
 
@@ -70,7 +71,7 @@ Tracks per-client state for one control connection.
 
 | Function / Method | Description |
 |---|---|
-| `__init__(authenticator)` | Creates a unique session ID (`uuid`), stores auth reference, and initializes defaults: not logged in, no data socket. ASCII stream transfer is always used implicitly. |
+| `__init__(authenticator)` | Creates session with defaults: not logged in, `type = "A"`, no data socket. |
 | `set_user(username)` | Stores the username pending password verification. |
 | `login()` | Sets `logged_in = True` after successful `PASS`. |
 | `logout()` | Clears username and login flag on `QUIT`. |

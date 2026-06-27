@@ -12,6 +12,8 @@ class Session:
         self.data_socket = None
         self.data_port = None
         self.data_host = None
+        self.type = "A"
+        self.rename_from = None
 
     def set_user(self, username):
         self.username = username

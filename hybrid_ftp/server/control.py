@@ -1,3 +1,4 @@
+import os
 import socket
 
 from reply_code import ReplyCode, DefaultMessage
@@ -10,6 +11,20 @@ BASIC_COMMANDS = (
     "PASS <password>",
     "QUIT",
     "NOOP",
+    "PWD",
+    "CWD <path>",
+    "CDUP",
+    "MKD <dirname>",
+    "RMD <dirname>",
+    "LIST [path]",
+    "NLST [path]",
+    "STAT [path]",
+    "SIZE <filename>",
+    "MDTM <filename>",
+    "DELE <filename>",
+    "RNFR <oldname>",
+    "RNTO <newname>",
+    "TYPE <type>",
     "RETR <filename>",
     "STOR <filename>",
     "HELP [command]",
@@ -28,17 +43,17 @@ class ControlChannel:
             "PASS": self.handle_pass,
             "QUIT": self.handle_quit,
             "NOOP": self.handle_noop,
-            "PWD": self.handle_not_implemented,
-            "CWD": self.handle_not_implemented,
-            "CDUP": self.handle_not_implemented,
-            "MKD": self.handle_not_implemented,
-            "RMD": self.handle_not_implemented,
-            "LIST": self.handle_not_implemented,
-            "NLST": self.handle_not_implemented,
-            "STAT": self.handle_not_implemented,
-            "SIZE": self.handle_not_implemented,
-            "MDTM": self.handle_not_implemented,
-            "TYPE": self.handle_not_implemented,
+            "PWD": self.handle_pwd,
+            "CWD": self.handle_cwd,
+            "CDUP": self.handle_cdup,
+            "MKD": self.handle_mkd,
+            "RMD": self.handle_rmd,
+            "LIST": self.handle_list,
+            "NLST": self.handle_nlst,
+            "STAT": self.handle_stat,
+            "SIZE": self.handle_size,
+            "MDTM": self.handle_mdtm,
+            "TYPE": self.handle_type,
             "MODE": self.handle_not_implemented,
             "PORT": self.handle_not_implemented,
             "PASV": self.handle_not_implemented,
@@ -46,9 +61,9 @@ class ControlChannel:
             "STOR": self.handle_stor,
             "STOU": self.handle_not_implemented,
             "APPE": self.handle_not_implemented,
-            "DELE": self.handle_not_implemented,
-            "RNFR": self.handle_not_implemented,
-            "RNTO": self.handle_not_implemented,
+            "DELE": self.handle_dele,
+            "RNFR": self.handle_rnfr,
+            "RNTO": self.handle_rnto,
             "HASH": self.handle_not_implemented,
             "ABOR": self.handle_not_implemented,
             "HELP": self.handle_help,
@@ -89,18 +104,42 @@ class ControlChannel:
             return False
         return True
 
-    def _parse_filename(self, args: str) -> str | None:
-        filename = args.strip()
-        if not filename:
-            self._send_response(ReplyCode.ArgumentSyntaxError)
-            return None
-        if " " in filename:
+    def _parse_path(self, args: str, required: bool = True) -> str | None:
+        path = args.strip()
+        if not path:
+            if required:
+                self._send_response(ReplyCode.ArgumentSyntaxError)
+                return None
+            return ""
+        if " " in path:
             self._send_response(
                 ReplyCode.ArgumentSyntaxError,
-                "Filename must be a single name without spaces.",
+                "Path must not contain spaces.",
             )
             return None
-        return filename
+        return path
+
+    def _parse_filename(self, args: str) -> str | None:
+        return self._parse_path(args, required=True)
+
+    def _send_over_data(self, payload: bytes, opening_msg: str) -> bool:
+        try:
+            host, port = self._open_data_channel()
+            endpoint = self._format_data_endpoint(host, port)
+            self._send_response(
+                ReplyCode.OpeningData,
+                f"{opening_msg} Endpoint {endpoint}.",
+            )
+            channel = DataChannel(self.session.data_socket)
+            channel.send_file(payload)
+            self._send_response(ReplyCode.ClosingData, "Transfer complete.")
+            return True
+        except (TimeoutError, OSError, FileNotFoundError, ValueError) as exc:
+            print(f"[data] Transfer failed: {exc}")
+            self._send_response(ReplyCode.ConnectionClosed)
+            return False
+        finally:
+            self.session.close_data_channel()
 
     def _data_host_for_reply(self) -> str:
         if self.session.data_host:
@@ -200,6 +239,230 @@ class ControlChannel:
     def handle_noop(self, _args):
         self._send_response(ReplyCode.CommandOK)
 
+    def handle_pwd(self, _args):
+        if not self._require_login():
+            return
+        path = self.fs.pwd()
+        self._send_response(ReplyCode.PathnameCreated, f'"{path}" is the current directory.')
+
+    def handle_cwd(self, args):
+        if not self._require_login():
+            return
+
+        path = self._parse_path(args)
+        if path is None:
+            return
+
+        try:
+            self.fs.cwd(path)
+            self._send_response(ReplyCode.FileActionOK, "Directory changed.")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+        except ValueError:
+            self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed)
+
+    def handle_cdup(self, _args):
+        if not self._require_login():
+            return
+
+        self.fs.cdup()
+        self._send_response(ReplyCode.FileActionOK, "Directory changed.")
+
+    def handle_mkd(self, args):
+        if not self._require_login():
+            return
+
+        dirname = self._parse_path(args)
+        if dirname is None:
+            return
+
+        try:
+            created = self.fs.mkdir(dirname)
+            self._send_response(ReplyCode.PathnameCreated, f'"{created}" created.')
+        except FileExistsError:
+            self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed, "Directory already exists.")
+        except ValueError:
+            self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed)
+
+    def handle_rmd(self, args):
+        if not self._require_login():
+            return
+
+        dirname = self._parse_path(args)
+        if dirname is None:
+            return
+
+        try:
+            self.fs.rmdir(dirname)
+            self._send_response(ReplyCode.FileActionOK, "Directory removed.")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+        except OSError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable, "Directory not empty.")
+
+    def handle_list(self, args):
+        if not self._require_login():
+            return
+
+        path = self._parse_path(args, required=False)
+        if path is None:
+            return
+
+        try:
+            listing = self.fs.format_list(path or None)
+            self._send_over_data(listing, "Opening directory list.")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_nlst(self, args):
+        if not self._require_login():
+            return
+
+        path = self._parse_path(args, required=False)
+        if path is None:
+            return
+
+        try:
+            listing = self.fs.format_nlst(path or None)
+            self._send_over_data(listing, "Opening name list.")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_stat(self, args):
+        if not self._require_login():
+            return
+
+        path = self._parse_path(args, required=False)
+        if path is None:
+            return
+
+        try:
+            if not path:
+                transfer = "ASCII" if self.session.type == "A" else "Image"
+                info = (
+                    f"Hybrid FTP server status.\n"
+                    f" User: {self.session.username}\n"
+                    f" Current directory: {self.fs.display_path()}\n"
+                    f" Transfer type: {transfer}\n"
+                )
+                self._send_response(ReplyCode.SystemStatus, info)
+                return
+
+            target = self.fs.resolve_path(path)
+            if os.path.isdir(target):
+                info = self.fs.format_directory_stat(path)
+                self._send_response(ReplyCode.DirectoryStatus, info)
+            elif os.path.isfile(target):
+                info = self.fs.format_file_stat(path)
+                self._send_response(ReplyCode.FileStatus, info)
+            else:
+                self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+        except (FileNotFoundError, ValueError):
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_size(self, args):
+        if not self._require_login():
+            return
+
+        filename = self._parse_path(args)
+        if filename is None:
+            return
+
+        try:
+            size = self.fs.file_size(filename)
+            self._send_response(ReplyCode.FileStatus, str(size))
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_mdtm(self, args):
+        if not self._require_login():
+            return
+
+        filename = self._parse_path(args)
+        if filename is None:
+            return
+
+        try:
+            mtime = self.fs.file_mtime(filename)
+            self._send_response(ReplyCode.FileStatus, mtime)
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_dele(self, args):
+        if not self._require_login():
+            return
+
+        filename = self._parse_path(args)
+        if filename is None:
+            return
+
+        try:
+            self.fs.delete_file(filename)
+            self._send_response(ReplyCode.FileActionOK, "File deleted.")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+
+    def handle_rnfr(self, args):
+        if not self._require_login():
+            return
+
+        old_name = self._parse_path(args)
+        if old_name is None:
+            return
+
+        if not self.fs.path_exists(old_name):
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+            return
+
+        self.session.rename_from = old_name
+        self._send_response(ReplyCode.FileCommandPending, "File marked for rename.")
+
+    def handle_rnto(self, args):
+        if not self._require_login():
+            return
+
+        if self.session.rename_from is None:
+            self._send_response(ReplyCode.BadCommandSequence, "RNFR required before RNTO.")
+            return
+
+        new_name = self._parse_path(args)
+        if new_name is None:
+            return
+
+        try:
+            self.fs.rename(self.session.rename_from, new_name)
+            self.session.rename_from = None
+            self._send_response(ReplyCode.FileActionOK, "Rename complete.")
+        except FileNotFoundError:
+            self.session.rename_from = None
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
+        except ValueError:
+            self.session.rename_from = None
+            self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed)
+
+    def handle_type(self, args):
+        if not self._require_login():
+            return
+
+        transfer_type = args.strip().upper()
+        if transfer_type not in ("A", "I"):
+            self._send_response(ReplyCode.ArgumentSyntaxError, "TYPE must be A or I.")
+            return
+
+        self.session.type = transfer_type
+        label = "ASCII" if transfer_type == "A" else "Binary"
+        self._send_response(ReplyCode.CommandOK, f"Type set to {label}.")
+
+    def _prepare_outgoing_data(self, file_data: bytes) -> bytes:
+        if self.session.type == "A":
+            return file_data.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
+        return file_data
+
+    def _prepare_incoming_data(self, file_data: bytes) -> bytes:
+        if self.session.type == "A":
+            return file_data.replace(b"\r\n", b"\n")
+        return file_data
+
     def handle_retr(self, args):
         if not self._require_login():
             return
@@ -213,8 +476,7 @@ class ControlChannel:
             return
 
         try:
-            file_data = self.fs.read_file(filename)
-            file_data = file_data.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
+            file_data = self._prepare_outgoing_data(self.fs.read_file(filename))
 
             host, port = self._open_data_channel()
             endpoint = self._format_data_endpoint(host, port)
@@ -249,8 +511,7 @@ class ControlChannel:
             )
 
             channel = DataChannel(self.session.data_socket)
-            file_data = channel.receive_file()
-            file_data = file_data.replace(b"\r\n", b"\n")
+            file_data = self._prepare_incoming_data(channel.receive_file())
 
             self.fs.write_file(filename, file_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete.")
@@ -263,7 +524,7 @@ class ControlChannel:
     def handle_help(self, args):
         topic = args.strip().upper()
         if not topic:
-            text = "Supported basic commands: " + ", ".join(cmd.split()[0] for cmd in BASIC_COMMANDS)
+            text = "Supported commands: " + ", ".join(cmd.split()[0] for cmd in BASIC_COMMANDS)
             self._send_response(ReplyCode.CommandOK, text)
             return
 

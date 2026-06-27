@@ -8,6 +8,7 @@ class ReplyCode(IntEnum):
     
     CommandOK = 200
     CommandExtraneous = 202
+    SystemStatus = 211
     DirectoryStatus = 212
     FileStatus = 213
     SystemType = 215
@@ -50,6 +51,7 @@ DefaultMessage = {
     
     ReplyCode.CommandOK: "Command okay.",
     ReplyCode.CommandExtraneous: "Command not implemented, superfluous at this site.",
+    ReplyCode.SystemStatus: "System status.",
     ReplyCode.DirectoryStatus: "Directory status.",
     ReplyCode.FileStatus: "File status.",
     ReplyCode.SystemType: "{system_name}",
