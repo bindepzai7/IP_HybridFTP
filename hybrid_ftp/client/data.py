@@ -9,15 +9,12 @@ import socket
 import struct
 
 MAX_PAYLOAD = 1024
-DEFAULT_TIMEOUT = 30.0
 
 
 class DataChannel:
-    def __init__(self, udp_socket: socket.socket, peer_addr, timeout: float = DEFAULT_TIMEOUT):
+    def __init__(self, udp_socket: socket.socket, peer_addr):
         self.udp_socket = udp_socket
         self.peer_addr = peer_addr
-        self.timeout = timeout
-        self.udp_socket.settimeout(timeout)
 
     def send(self, data: bytes) -> None:
         self.udp_socket.sendto(struct.pack("!I", len(data)), self.peer_addr)

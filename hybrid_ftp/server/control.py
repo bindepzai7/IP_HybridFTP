@@ -134,7 +134,7 @@ class ControlChannel:
             channel.send_file(payload)
             self._send_response(ReplyCode.ClosingData, "Transfer complete.")
             return True
-        except (TimeoutError, OSError, FileNotFoundError, ValueError) as exc:
+        except (OSError, FileNotFoundError, ValueError) as exc:
             print(f"[data] Transfer failed: {exc}")
             self._send_response(ReplyCode.ConnectionClosed)
             return False
@@ -161,7 +161,6 @@ class ControlChannel:
 
         data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         data_sock.bind(("0.0.0.0", 0))
-        data_sock.settimeout(30.0)
 
         _, port = data_sock.getsockname()
         host = self._data_host_for_reply()
@@ -488,7 +487,7 @@ class ControlChannel:
             channel = DataChannel(self.session.data_socket)
             channel.send_file(file_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete.")
-        except (TimeoutError, OSError) as exc:
+        except OSError as exc:
             print(f"[data] RETR failed: {exc}")
             self._send_response(ReplyCode.ConnectionClosed)
         finally:
@@ -515,7 +514,7 @@ class ControlChannel:
 
             self.fs.write_file(filename, file_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete.")
-        except (TimeoutError, OSError) as exc:
+        except OSError as exc:
             print(f"[data] STOR failed: {exc}")
             self._send_response(ReplyCode.ConnectionClosed)
         finally:
