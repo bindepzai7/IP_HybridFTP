@@ -13,7 +13,6 @@ class FTPServer:
 
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_sock.settimeout(0.5)
 
     def start(self):
         self.server_sock.bind((self.host, self.port))
@@ -22,11 +21,7 @@ class FTPServer:
 
         try:
             while True:
-                try:
-                    client_sock, addr = self.server_sock.accept()
-                except socket.timeout:
-                    continue
-
+                client_sock, addr = self.server_sock.accept()
                 print(f"Client connected: {addr[0]}:{addr[1]}")
                 ControlChannel(client_sock, Session(self.authenticator), addr).run()
 
