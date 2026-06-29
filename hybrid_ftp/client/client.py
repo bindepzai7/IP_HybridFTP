@@ -1,261 +1,218 @@
 import os
 import re
-import socket
-import time
 
-from data import DataChannel
+from .data import DataChannel
+from .control import ControlChannel
+from ..common.mode import TransferMode, TransferEngine
 
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".py", ".html", ".htm", ".json", ".xml"}
-BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
-    ".zip", ".pdf", ".bin", ".exe", ".mp3", ".mp4", ".dat",
-}
-
-
-class FTPClient:
-    def __init__(self, host="127.0.0.1", port=2121, retry=5):
-        os.makedirs(STORAGE_DIR, exist_ok=True)
-        self.host = host
-        self.port = port
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        for i in range(retry):
+class FTPClient: 
+    def __init__(self):
+        self.control = ControlChannel()
+        self.data = None
+        self.mode = TransferMode.STREAM
+        
+    def connect(self, host, port):
+        self.control.connect(host, port)
+        
+    def disconnect_data(self):
+        if self.data is not None:
             try:
-                self.sock.connect((host, port))
-                print(f"Connected to FTP server at {host}:{port}")
-                break
-            except ConnectionRefusedError:
-                print(f"Server not ready (attempt {i + 1}/{retry}), retrying...")
-                time.sleep(1)
-        else:
-            raise ConnectionError("Cannot connect to FTP server")
+                self.data.sock.close()
+            except Exception:
+                pass
+            self.data = None
 
-        self.buffer = ""
-        self.logged_in = False
-        self.transfer_type = "A"
-        self.data_host = None
-        self.data_port = None
-
-        print(self._read_response())
-
+    def disconnect(self):
+        self.disconnect_data()
+        self.control.close()
+        
+    def _send_cmd(self, cmd_line: str) -> str:
+        self.control.send_line(cmd_line)
+        resp = self.control.read_line()
+        print(resp)
+        return resp
+    
     def _storage_path(self, filename: str) -> str:
         path = os.path.abspath(os.path.join(STORAGE_DIR, filename))
         if not path.startswith(STORAGE_DIR):
-            raise ValueError("Path outside storage directory")
+            raise ValueError("Path traversal detected.")
         return path
+    
+    def _finish_transfer(self):
+        final = self.control.read_line()
+        print(final)
+        self.disconnect_data()
+        
+    def _expect(self, response, *codes):
+        if not any(response.startswith(code) for code in codes):
+            raise RuntimeError(response)
+    
+    def set_passive_mode(self) -> tuple[str, int]:
+        resp = self._send_cmd("PASV")
+        if not resp.startswith("227"):
+            raise RuntimeError(f"PASV failed: {resp}")
+        m = re.search(r"\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)", resp)
+        if not m:
+            raise RuntimeError(f"Invalid PASV response: {resp}")
+        host = ".".join(m.group(1, 2, 3, 4))
+        port = int(m.group(5)) * 256 + int(m.group(6))
+        
+        if host == "0.0.0.0":
+            host = self.control.sock.getpeername()[0]
+        
+        self.disconnect_data()
+        self.data = DataChannel()
+        self.data.bind()
+        self.data.set_peer(host, port)
 
-    def _read_response(self):
-        lines = []
+        print(f"[Data] Passive mode set to {host}:{port}")
+        return host, port
+    
+    def set_active_mode(self, port_str: str) -> tuple[str, int]:
+        parts = port_str.split(",")
+        if len(parts) != 6:
+            raise ValueError("Syntax Error: h1,h2,h3,h4,p1,p2")
+        host = ".".join(parts[:4])
+        port = int(parts[4])*256 + int(parts[5])
+        
+        self.disconnect_data()
+        self.data = DataChannel()
+        self.data.bind(host, port)
+        actual_port = self.data.local_port()
+        
+        ip_parts = host.replace(".", ",")
+        p1, p2 = actual_port // 256, actual_port % 256
+        cmd = f"PORT {ip_parts},{p1},{p2}"
+        
+        resp = self._send_cmd(cmd)
+        self._expect(resp, "200")
 
-        while True:
-            while "\r\n" not in self.buffer:
-                data = self.sock.recv(4096).decode(errors="replace")
-                if not data:
-                    return "\n".join(lines)
-                self.buffer += data
+        print(f"[Data] Active: listening on {host}:{actual_port}")
+        return host, actual_port    
 
-            line, self.buffer = self.buffer.split("\r\n", 1)
-            lines.append(line)
-
-            if len(line) >= 4 and line[3] == " " and line[:3].isdigit():
-                break
-
-        return "\n".join(lines)
-
-    def _response_code(self, response: str) -> int:
-        if response and response[:3].isdigit():
-            return int(response[:3])
-        return 0
-
-    def send(self, cmd: str):
-        print(f">>> {cmd}")
-        self.sock.sendall((cmd + "\r\n").encode())
-        response = self._read_response()
-        print(f"<<< {response}")
-        return response
-
-    def _parse_data_endpoint(self, response: str):
-        match = re.search(r"\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)", response)
-        if not match:
-            raise ValueError("No data endpoint in server response")
-
-        host = ".".join(match.group(i) for i in range(1, 5))
-        port = int(match.group(5)) * 256 + int(match.group(6))
-        self.data_host = host
-        self.data_port = port
-
-    def _guess_transfer_type(self, filename: str) -> str:
-        ext = os.path.splitext(filename)[1].lower()
-        if ext in TEXT_EXTENSIONS:
-            return "A"
-        if ext in BINARY_EXTENSIONS:
-            return "I"
-        return "I"
-
-    def set_transfer_type(self, transfer_type: str) -> None:
-        transfer_type = transfer_type.upper()
-        if transfer_type not in ("A", "I"):
-            raise ValueError("Transfer type must be A or I")
-
-        if transfer_type == self.transfer_type:
+    def set_transfer_mode(self, mode_char: str):
+        mode_char = mode_char.upper()
+        try:
+            target_mode = TransferMode(mode_char)
+        except ValueError:
+            print("Invalid mode. Use S, B, or C.")
             return
 
-        response = self.send(f"TYPE {transfer_type}")
-        if self._response_code(response) != 200:
-            raise RuntimeError(response)
-        self.transfer_type = transfer_type
+        resp = self._send_cmd(f"MODE {mode_char}")
+        
+        if resp.startswith("200"):
+            self.mode = target_mode
+            print(f"[Client] Internal mode updated to {target_mode.name}")
 
-    def _ensure_transfer_type(self, filename: str) -> None:
-        self.set_transfer_type(self._guess_transfer_type(filename))
-
-    def upload(self, filename: str, remote_name: str | None = None):
-        local_path = self._storage_path(filename)
-        remote_name = remote_name or os.path.basename(filename)
-        if not os.path.isfile(local_path):
-            raise FileNotFoundError(local_path)
-
-        with open(local_path, "rb") as f:
-            data = f.read()
-
-        self._ensure_transfer_type(filename)
-        response = self.send(f"STOR {remote_name}")
-        if self._response_code(response) != 150:
-            raise RuntimeError(response)
-
-        self._parse_data_endpoint(response)
-        print(f"[data] Data endpoint {self.data_host}:{self.data_port}")
-        peer = (self.data_host, self.data_port)
-
-        print(f"[data] Uploading {len(data)} bytes...")
-        channel = DataChannel(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), peer)
-        channel.send(data)
-        channel.close()
-
-        response = self._read_response()
-        print(f"<<< {response}")
-        return response
-
-    def download(self, remote_name: str, local_filename: str | None = None):
+    def retr(self, remote_name, local_filename):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
+        
         local_filename = local_filename or remote_name
         local_path = self._storage_path(local_filename)
-
-        self._ensure_transfer_type(local_filename)
-        response = self.send(f"RETR {remote_name}")
-        if self._response_code(response) != 150:
-            raise RuntimeError(response)
-
-        self._parse_data_endpoint(response)
-        print(f"[data] Data endpoint {self.data_host}:{self.data_port}")
-        peer = (self.data_host, self.data_port)
-
-        channel = DataChannel(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), peer)
-        channel.signal_ready()
-        print("[data] Downloading...")
-        data = channel.receive()
-        channel.close()
-
+        
+        resp = self._send_cmd(f"RETR {remote_name}")
+        self._expect(resp, "125", "150")
+        data_bytes = self.data.receive()
+        raw_data = TransferEngine.decode_data(data_bytes, self.mode)
+        
         with open(local_path, "wb") as f:
-            f.write(data)
+            f.write(raw_data)
+        print(f"[Client] Saved → storage/{local_filename}")
+        
+        self._finish_transfer()
+        
+    def stor(self, local_filename, remote_name):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
+        
+        local_path = self._storage_path(local_filename)
+        remote_name = remote_name or os.path.basename(local_filename)
+        
+        if not os.path.isfile(local_path):
+            raise FileNotFoundError(f"Not found: {local_path}")
+        
+        with open(local_path, "rb") as f:
+            raw_data = f.read()
+        
+        payload = TransferEngine.encode_data(raw_data, self.mode)
+        
+        resp = self._send_cmd(f"STOR {remote_name}")
+        
+        self._expect(resp, "125", "150")
+        self.data.send(payload)
+        print(f"[Client] Sent {len(payload)} (encoded) bytes → {remote_name}")
+        self._finish_transfer()
+    
+    def list_dir(self, path: str = ""):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
+        
+        cmd = f"LIST {path}".strip()
+        resp = self._send_cmd(cmd)
+        self._expect(resp, "125", "150")
+        
+        raw = self.data.receive()
+        print(raw.decode("utf-8", errors="replace"))
+        
+        self._finish_transfer()
+    
+    def nlst(self, path: str=""):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
 
-        print(f"[data] Saved {len(data)} bytes to {local_path}")
-        response = self._read_response()
-        print(f"<<< {response}")
-        return response
+        cmd = f"NLST {path}".strip()
+        resp = self._send_cmd(cmd)
+        if not resp.startswith("150"):
+            return
 
-    def receive_data(self, command: str) -> bytes:
-        response = self.send(command)
-        if self._response_code(response) != 150:
-            raise RuntimeError(response)
+        raw = self.data.receive()
+        print(raw.decode("utf-8", errors="replace"))
 
-        self._parse_data_endpoint(response)
-        peer = (self.data_host, self.data_port)
-
-        channel = DataChannel(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), peer)
-        channel.signal_ready()
-        data = channel.receive()
-        channel.close()
-
-        response = self._read_response()
-        print(f"<<< {response}")
-        if self._response_code(response) != 226:
-            raise RuntimeError(response)
-        return data
-
-    def list_directory(self, command: str = "LIST", path: str = "") -> str:
-        cmd = command.upper()
-        if path:
-            cmd = f"{cmd} {path}"
-        data = self.receive_data(cmd)
-        text = data.decode(errors="replace")
-        if text:
-            print(text.rstrip())
-        return text
-
-    def close(self):
-        self.sock.close()
-
-
-def main():
-    client = FTPClient()
-
-    try:
-        while True:
-            line = input("ftp> ").strip()
-            if not line:
-                continue
-
-            lower = line.lower()
-            if lower in ("exit", "quit"):
-                if lower == "quit":
-                    print(client.send("QUIT"))
-                break
-
-            tokens = line.split()
-            cmd = tokens[0].upper() if tokens else ""
-            if cmd == "STOR":
-                if len(tokens) == 2:
-                    try:
-                        client.upload(tokens[1])
-                    except Exception as exc:
-                        print(f"Upload failed: {exc}")
-                else:
-                    print("Usage: STOR <filename>")
-                continue
-
-            if cmd == "RETR":
-                if len(tokens) == 2:
-                    try:
-                        client.download(tokens[1])
-                    except Exception as exc:
-                        print(f"Download failed: {exc}")
-                else:
-                    print("Usage: RETR <filename>")
-                continue
-
-            if cmd in ("LIST", "NLST"):
-                path = tokens[1] if len(tokens) == 2 else ""
-                try:
-                    client.list_directory(cmd, path)
-                except Exception as exc:
-                    print(f"{cmd} failed: {exc}")
-                continue
-
-            response = client.send(line)
-            code = client._response_code(response)
-            if line.upper().startswith("USER") and code == 331:
-                client.logged_in = False
-            elif line.upper().startswith("PASS") and code == 230:
-                client.logged_in = True
-            elif line.upper().startswith("TYPE ") and code == 200:
-                client.transfer_type = tokens[1].upper() if len(tokens) == 2 else client.transfer_type
-
-    except KeyboardInterrupt:
-        print("\nForce quitting...")
-    finally:
-        client.close()
-
-
-if __name__ == "__main__":
-    main()
+        final = self.control.read_line()
+        print(final)
+        self.disconnect_data()
+        
+    def appe(self, local_filename, remote_name):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
+        
+        local_path = self._storage_path(local_filename)
+        remote_name = remote_name or os.path.basename(local_filename)
+        
+        if not os.path.isfile(local_path):
+            raise FileNotFoundError(f"Not found: {local_path}")
+        
+        with open(local_path, "rb") as f:
+            raw_data = f.read()
+        payload = TransferEngine.encode_data(raw_data, self.mode)
+        resp = self._send_cmd(f"APPE {remote_name}")
+        
+        self._expect(resp, "125", "150")
+        self.data.send(payload)
+        print(f"[Client] Appended {len(payload)} bytes → {remote_name}")
+        self._finish_transfer()
+        
+    def stou(self, local_filename):
+        if self.data is None:
+            raise ConnectionError("No data channel connection.")
+        
+        local_path = self._storage_path(local_filename)
+        
+        if not os.path.isfile(local_path):
+            raise FileNotFoundError(f"Not found: {local_path}")
+        
+        with open(local_path, "rb") as f:
+            raw_data = f.read()
+            
+        payload = TransferEngine.encode_data(raw_data, self.mode)
+        
+        resp = self._send_cmd("STOU")
+        
+        self._expect(resp, "125", "150")
+        self.data.send(payload)
+        print(f"[Client] Sent {len(payload)} bytes (STOU)")
+        self._finish_transfer()
