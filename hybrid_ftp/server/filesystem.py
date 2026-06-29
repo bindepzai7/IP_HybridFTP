@@ -7,6 +7,8 @@ Handles file and directory management for the FTP server.
 import os
 import stat
 import time
+import hashlib
+import uuid
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
 ROOT_DIR = os.path.join(DATA_DIR, "root")
@@ -185,3 +187,25 @@ class FileSystem:
         for name in sorted(entries):
             lines.append(self._format_list_line(os.path.join(target, name), name))
         return "\n".join(lines) + "\n"
+
+    def append_file(self, filename: str, data: bytes) -> None:
+        path = self.resolve_path(filename)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "ab") as f:
+            f.write(data)
+            
+    def hash_file(self, filename: str) -> str:
+        path = self.resolve_path(filename)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(filename)
+        hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(8192):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    
+    def generate_unique_name(self):
+        while True:
+            name = f"{uuid.uuid4().hex}.dat"
+            if not os.path.exists(name):
+                return name
