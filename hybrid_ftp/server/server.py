@@ -1,46 +1,48 @@
 import socket
+import threading
 
-from control import ControlChannel
-from auth import Authenticator
-from session import Session
-
+from .auth import Authenticator
+from .control import ControlChannel
+from .session import Session
 
 class FTPServer:
     def __init__(self, host="0.0.0.0", port=2121, authenticator=None):
         self.host = host
         self.port = port
         self.authenticator = authenticator or Authenticator()
-
-        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
+        
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
     def start(self):
-        self.server_sock.bind((self.host, self.port))
-        self.server_sock.listen()
-        print(f"Hybrid FTP server listening on {self.host}:{self.port}")
-
+        self.sock.bind((self.host, self.port))
+        self.sock.listen()
+        
+        print(f"FTP Server listening on {self.host}:{self.port}")
+        
+        while True:
+            client_sock, addr = self.sock.accept()
+            thread = threading.Thread(
+                target=self._handle_client,
+                args=(client_sock, addr),
+                daemon=True,
+            )
+            thread.start()
+            
+    def stop(self):
+        self.sock.close()
+            
+    def _handle_client(self, client_sock, addr):
+        session = Session(self.authenticator)
+        
         try:
-            while True:
-                client_sock, addr = self.server_sock.accept()
-                print(f"Client connected: {addr[0]}:{addr[1]}")
-                ControlChannel(client_sock, Session(self.authenticator), addr).run()
-
-        except KeyboardInterrupt:
-            print("\nShutting down server...")
+            control = ControlChannel(client_sock, session)
+            print(f"[+] Client connected: {addr}")
+            control.run()
+        except Exception as e:
+            print(f"[{addr}] {e}")
 
         finally:
-            self.server_sock.close()
-
-
-def main():
-    authenticator = Authenticator()
-    if not authenticator.user_exists("user"):
-        authenticator.add_user("user", "password")
-        print("Created default account: user / password")
-
-    server = FTPServer(authenticator=authenticator)
-    server.start()
-
-
-if __name__ == "__main__":
-    main()
+            session.close_data_channel()
+            client_sock.close()
+            print(f"[-] Client disconnected: {addr}")
