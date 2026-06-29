@@ -1,10 +1,11 @@
 import os
 import socket
+import struct
+import zlib
 
-from reply_code import ReplyCode, DefaultMessage
-from session import Session
-from filesystem import FileSystem
-from data import DataChannel
+from .reply_code import ReplyCode, DefaultMessage
+from .data import ActiveDataChannel, PassiveDataChannel, MAX_PAYLOAD
+from ..common.mode import TransferMode, TransferEngine
 
 BASIC_COMMANDS = (
     "USER <username>",
@@ -36,7 +37,7 @@ class ControlChannel:
         self.sock = client_sock
         self.session = session
         self.client_addr = client_addr
-        self.fs = FileSystem()
+        # self.session.fs = FileSystem()
 
         self.handlers = {
             "USER": self.handle_user,
@@ -54,18 +55,18 @@ class ControlChannel:
             "SIZE": self.handle_size,
             "MDTM": self.handle_mdtm,
             "TYPE": self.handle_type,
-            "MODE": self.handle_not_implemented,
-            "PORT": self.handle_not_implemented,
-            "PASV": self.handle_not_implemented,
+            "MODE": self.handle_mode,
+            "PORT": self.handle_port,
+            "PASV": self.handle_pasv,
             "RETR": self.handle_retr,
             "STOR": self.handle_stor,
-            "STOU": self.handle_not_implemented,
-            "APPE": self.handle_not_implemented,
+            "STOU": self.handle_stou,
+            "APPE": self.handle_appe,
             "DELE": self.handle_dele,
             "RNFR": self.handle_rnfr,
             "RNTO": self.handle_rnto,
-            "HASH": self.handle_not_implemented,
-            "ABOR": self.handle_not_implemented,
+            "HASH": self.handle_hash,
+            "ABOR": self.handle_abor,
             "HELP": self.handle_help,
         }
 
@@ -103,6 +104,12 @@ class ControlChannel:
             self._send_response(ReplyCode.NotLoggedIn)
             return False
         return True
+    
+    def _require_data_connection(self):
+        if self.session.data_channel is None:
+            self._send_response(ReplyCode.CantOpenData)
+            return False
+        return True
 
     def _parse_path(self, args: str, required: bool = True) -> str | None:
         path = args.strip()
@@ -119,58 +126,26 @@ class ControlChannel:
             return None
         return path
 
-    def _parse_filename(self, args: str) -> str | None:
-        return self._parse_path(args, required=True)
+    # def _parse_filename(self, args: str) -> str | None:
+    #     return self._parse_path(args, required=True)
 
     def _send_over_data(self, payload: bytes, opening_msg: str) -> bool:
+        if not self._require_data_connection():
+            return False
         try:
-            host, port = self._open_data_channel()
-            endpoint = self._format_data_endpoint(host, port)
-            self._send_response(
-                ReplyCode.OpeningData,
-                f"{opening_msg} Endpoint {endpoint}.",
-            )
-            channel = DataChannel(self.session.data_socket)
-            channel.send_file(payload)
-            self._send_response(ReplyCode.ClosingData, "Transfer complete.")
+            self._send_response(ReplyCode.OpeningData, opening_msg)
+            
+            self.session.data_channel.establish()
+            self.session.data_channel.send_file(payload)
+            
+            self._send_response(ReplyCode.ClosingData)
             return True
-        except (OSError, FileNotFoundError, ValueError) as exc:
+        except Exception as exc:
             print(f"[data] Transfer failed: {exc}")
-            self._send_response(ReplyCode.ConnectionClosed)
+            self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
             return False
         finally:
             self.session.close_data_channel()
-
-    def _data_host_for_reply(self) -> str:
-        if self.session.data_host:
-            return self.session.data_host
-        if self.client_addr:
-            return self.client_addr[0]
-        host, _ = self.sock.getsockname()
-        return "127.0.0.1" if host == "0.0.0.0" else host
-
-    def _format_data_endpoint(self, host: str, port: int) -> str:
-        parts = host.split(".")
-        p1 = port // 256
-        p2 = port % 256
-        return f"({parts[0]},{parts[1]},{parts[2]},{parts[3]},{p1},{p2})"
-
-    def _open_data_channel(self) -> tuple[str, int]:
-        """Open the fixed UDP data channel (server listens, client connects)."""
-        self.session.close_data_channel()
-
-        data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        data_sock.bind(("0.0.0.0", 0))
-
-        _, port = data_sock.getsockname()
-        host = self._data_host_for_reply()
-
-        self.session.data_socket = data_sock
-        self.session.data_port = port
-        self.session.data_host = host
-
-        print(f"[data] UDP listening on {host}:{port}")
-        return host, port
 
     def run(self):
         self._send_response(ReplyCode.SendUserCommand)
@@ -235,13 +210,16 @@ class ControlChannel:
         self._send_response(ReplyCode.ClosingControl)
         return "CLOSE"
 
-    def handle_noop(self, _args):
+    def handle_noop(self, line):
+        if line:
+            self._send_response(ReplyCode.CommandSyntaxError)
+            return 
         self._send_response(ReplyCode.CommandOK)
 
     def handle_pwd(self, _args):
         if not self._require_login():
             return
-        path = self.fs.pwd()
+        path = self.session.fs.pwd()
         self._send_response(ReplyCode.PathnameCreated, f'"{path}" is the current directory.')
 
     def handle_cwd(self, args):
@@ -253,7 +231,7 @@ class ControlChannel:
             return
 
         try:
-            self.fs.cwd(path)
+            self.session.fs.cwd(path)
             self._send_response(ReplyCode.FileActionOK, "Directory changed.")
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -264,7 +242,7 @@ class ControlChannel:
         if not self._require_login():
             return
 
-        self.fs.cdup()
+        self.session.fs.cdup()
         self._send_response(ReplyCode.FileActionOK, "Directory changed.")
 
     def handle_mkd(self, args):
@@ -276,7 +254,7 @@ class ControlChannel:
             return
 
         try:
-            created = self.fs.mkdir(dirname)
+            created = self.session.fs.mkdir(dirname)
             self._send_response(ReplyCode.PathnameCreated, f'"{created}" created.')
         except FileExistsError:
             self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed, "Directory already exists.")
@@ -292,7 +270,7 @@ class ControlChannel:
             return
 
         try:
-            self.fs.rmdir(dirname)
+            self.session.fs.rmdir(dirname)
             self._send_response(ReplyCode.FileActionOK, "Directory removed.")
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -308,7 +286,7 @@ class ControlChannel:
             return
 
         try:
-            listing = self.fs.format_list(path or None)
+            listing = self.session.fs.format_list(path or None)
             self._send_over_data(listing, "Opening directory list.")
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -322,7 +300,7 @@ class ControlChannel:
             return
 
         try:
-            listing = self.fs.format_nlst(path or None)
+            listing = self.session.fs.format_nlst(path or None)
             self._send_over_data(listing, "Opening name list.")
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -341,18 +319,18 @@ class ControlChannel:
                 info = (
                     f"Hybrid FTP server status.\n"
                     f" User: {self.session.username}\n"
-                    f" Current directory: {self.fs.display_path()}\n"
+                    f" Current directory: {self.session.fs.display_path()}\n"
                     f" Transfer type: {transfer}\n"
                 )
                 self._send_response(ReplyCode.SystemStatus, info)
                 return
 
-            target = self.fs.resolve_path(path)
+            target = self.session.fs.resolve_path(path)
             if os.path.isdir(target):
-                info = self.fs.format_directory_stat(path)
+                info = self.session.fs.format_directory_stat(path)
                 self._send_response(ReplyCode.DirectoryStatus, info)
             elif os.path.isfile(target):
-                info = self.fs.format_file_stat(path)
+                info = self.session.fs.format_file_stat(path)
                 self._send_response(ReplyCode.FileStatus, info)
             else:
                 self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -368,7 +346,7 @@ class ControlChannel:
             return
 
         try:
-            size = self.fs.file_size(filename)
+            size = self.session.fs.file_size(filename)
             self._send_response(ReplyCode.FileStatus, str(size))
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -382,11 +360,42 @@ class ControlChannel:
             return
 
         try:
-            mtime = self.fs.file_mtime(filename)
+            mtime = self.session.fs.file_mtime(filename)
             self._send_response(ReplyCode.FileStatus, mtime)
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
 
+    def handle_appe(self, line):
+        if not self._require_login():
+            return
+        if not self._require_data_connection():
+            return 
+        
+        filename = self._parse_path(line)
+        if filename is None:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return
+        try:
+            self._send_response(ReplyCode.OpeningData)
+            self.session.data_channel.establish()
+            
+            meta = self.session.data_channel.recv_bytes()
+            total_size = struct.unpack("!I", meta)[0]
+            
+            file_data = bytearray()
+            while len(file_data) < total_size:
+                chunk = self.session.data_channel.recv_bytes()
+                file_data.extend(chunk)
+            decoded_data = TransferEngine.decode_data(file_data)
+            self.session.fs.append_file(filename, decoded_data)
+            self._send_response(ReplyCode.ClosingData, "Transfer complete and file appended.")
+        except Exception as e:
+            print(f"[APPE] File receiving error: {e}")
+            self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
+        finally:
+            self.session.close_data_channel()
+
+    
     def handle_dele(self, args):
         if not self._require_login():
             return
@@ -396,7 +405,7 @@ class ControlChannel:
             return
 
         try:
-            self.fs.delete_file(filename)
+            self.session.fs.delete_file(filename)
             self._send_response(ReplyCode.FileActionOK, "File deleted.")
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
@@ -409,7 +418,7 @@ class ControlChannel:
         if old_name is None:
             return
 
-        if not self.fs.path_exists(old_name):
+        if not self.session.fs.path_exists(old_name):
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
             return
 
@@ -429,7 +438,7 @@ class ControlChannel:
             return
 
         try:
-            self.fs.rename(self.session.rename_from, new_name)
+            self.session.fs.rename(self.session.rename_from, new_name)
             self.session.rename_from = None
             self._send_response(ReplyCode.FileActionOK, "Rename complete.")
         except FileNotFoundError:
@@ -438,6 +447,19 @@ class ControlChannel:
         except ValueError:
             self.session.rename_from = None
             self._send_response(ReplyCode.ActionNotTakenFilenameNotAllowed)
+            
+    def handle_hash(self, line):
+        if not self._require_login():
+            return
+        filename = self._parse_path(line)
+        if filename is None:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return 
+        try:
+            file_hash = self.session.fs.hash_file(filename)
+            self._send_response(ReplyCode.FileStatus, f"SHA256 {file_hash}")
+        except FileNotFoundError:
+            self._send_response(ReplyCode.ActionNotTakenFileUnavailable, "File not found.")
 
     def handle_type(self, args):
         if not self._require_login():
@@ -451,74 +473,177 @@ class ControlChannel:
         self.session.type = transfer_type
         label = "ASCII" if transfer_type == "A" else "Binary"
         self._send_response(ReplyCode.CommandOK, f"Type set to {label}.")
-
-    def _prepare_outgoing_data(self, file_data: bytes) -> bytes:
-        if self.session.type == "A":
-            return file_data.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
-        return file_data
-
-    def _prepare_incoming_data(self, file_data: bytes) -> bytes:
-        if self.session.type == "A":
-            return file_data.replace(b"\r\n", b"\n")
-        return file_data
-
-    def handle_retr(self, args):
+        
+    def handle_mode(self, line):
         if not self._require_login():
             return
+        
+        mode_char = line.strip().upper()
+        try: 
+            selected_mode = TransferMode(mode_char)
+            self.session.mode = selected_mode
+            self._send_response(ReplyCode.CommandOK, f"Mode set to {selected_mode.name.title()}.")
+        except ValueError:
+            self._send_response(ReplyCode.ArgumentSyntaxError, "MODE must be S, B, or C.")
 
-        filename = self._parse_filename(args)
+    def handle_retr(self, line):
+        if not self._require_login():
+            return
+        if not self._require_data_connection():
+            return
+        
+        filename = self._parse_path(line)
         if filename is None:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
             return
-
-        if not self.fs.file_exists(filename):
-            self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
-            return
-
         try:
-            file_data = self._prepare_outgoing_data(self.fs.read_file(filename))
-
-            host, port = self._open_data_channel()
-            endpoint = self._format_data_endpoint(host, port)
+            payload = self.session.fs.read_file(filename)
+            encoded_payload = TransferEngine.encode_data(payload, self.session.mode)
+            
+            self._send_response(ReplyCode.OpeningData)
+            self.session.data_channel.establish()
+            self.session.data_channel.send_file(encoded_payload)
+            self._send_response(ReplyCode.ClosingData)
+        
+        except FileNotFoundError:
             self._send_response(
-                ReplyCode.OpeningData,
-                f'Opening data connection for "{filename}". Endpoint {endpoint}.',
+                ReplyCode.ActionNotTakenFileUnavailable, 
+                "File not found."
             )
-
-            channel = DataChannel(self.session.data_socket)
-            channel.send_file(file_data)
-            self._send_response(ReplyCode.ClosingData, "Transfer complete.")
-        except OSError as exc:
-            print(f"[data] RETR failed: {exc}")
-            self._send_response(ReplyCode.ConnectionClosed)
+        except Exception as e:
+            print(f"[RETR] File transfer error: {e}")
+            self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
         finally:
             self.session.close_data_channel()
 
-    def handle_stor(self, args):
+
+    def handle_stor(self, line):
         if not self._require_login():
             return
-
-        filename = self._parse_filename(args)
-        if filename is None:
+        if not self._require_data_connection():
             return
-
+        filename = self._parse_path(line)
+        if filename is None:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return
         try:
-            host, port = self._open_data_channel()
-            endpoint = self._format_data_endpoint(host, port)
-            self._send_response(
-                ReplyCode.OpeningData,
-                f'Ready to receive "{filename}". Endpoint {endpoint}.',
-            )
-
-            channel = DataChannel(self.session.data_socket)
-            file_data = self._prepare_incoming_data(channel.receive_file())
-
-            self.fs.write_file(filename, file_data)
-            self._send_response(ReplyCode.ClosingData, "Transfer complete.")
-        except OSError as exc:
-            print(f"[data] STOR failed: {exc}")
-            self._send_response(ReplyCode.ConnectionClosed)
+            self._send_response(ReplyCode.OpeningData)
+            self.session.data_channel.establish()
+            
+            meta = self.session.data_channel.recv_bytes()
+            total_size = struct.unpack("!I", meta)[0]
+            
+            file_data = bytearray()
+            while len(file_data) < total_size:
+                chunk = self.session.data_channel.recv_bytes()
+                file_data.extend(chunk)
+                
+            decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
+            self.session.fs.write_file(filename, decoded_data)
+            self._send_response(ReplyCode.ClosingData, "Transfer complete and file saved.")
+        except Exception as e:
+            print(f"[STOR] File receiving error: {e}")
+            self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
+        finally:
+            try:
+                self.session.data_channel.sock.settimeout(None)
+            except:
+                pass
+            self.session.close_data_channel()
+            
+    def handle_stou(self, line):
+        if not self._require_login():
+            return
+        if not self._require_data_connection():
+            return
+        
+        if line:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+        
+        try:
+            unique_name = self.session.fs.generate_unique_name()
+            self._send_response(ReplyCode.OpeningData, f"FILE: {unique_name}")
+            self.session.data_channel.establish()
+            
+            meta = self.session.data_channel.recv_bytes()
+            total_size = struct.unpack("!I", meta)[0]
+            
+            file_data = bytearray()
+            while len(file_data) < total_size:
+                chunk = self.session.data_channel.recv_bytes()
+                file_data.extend(chunk)
+            decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
+            self.session.fs.write_file(unique_name, decoded_data)
+            self._send_response(ReplyCode.ClosingData, f"Transfer complete. Stored as {unique_name}.")
+            
+        except Exception as e:
+            print(f"[STOU] File receiving error: {e}")
+            self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
         finally:
             self.session.close_data_channel()
+            
+    def handle_port(self, line):
+        if not self._require_login():
+            return
+        print(line)
+        self.session.close_data_channel()
+        args = line.strip().split(',')
+        if len(args) != 6:
+            self._send_response(ReplyCode.ArgumentSyntaxError)
+            return
+        
+        try:
+            host = ".".join(args[:4])
+            port = int(args[4])*256 + int(args[5])
+            
+            self.session.close_data_channel()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("", 0))
+            
+            self.session.data_channel = ActiveDataChannel(sock, host, port)
+            
+            self._send_response(ReplyCode.CommandOK)
+            
+        except (ValueError, OSError):
+            self._send_response(
+                ReplyCode.CantOpenData,
+                "Invalid PORT command."
+            )
+    
+    def handle_pasv(self, line):
+        if not self._require_login():
+            return
+        if line:
+            self._send_response(ReplyCode.CommandSyntaxError)
+        try: 
+            self.session.close_data_channel()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("", 0))
+            
+            host =  self.sock.getsockname()[0]
+            _, port = sock.getsockname()
+            
+            self.session.data_channel = PassiveDataChannel(sock)
+            
+            h1, h2, h3, h4 = host.split('.')
+            p1 = port // 256
+            p2 = port % 256
+            
+            self._send_response(
+                ReplyCode.EnteringPassive,
+                f"Entering Passive Mode ({h1},{h2},{h3},{h4},{p1},{p2})."
+            )
+            
+        except OSError:
+            self._send_response(
+                ReplyCode.CantOpenData
+            )
+            
+    def handle_abor(self, line):
+        if not self._require_login():
+            return
+        self._send_response(ReplyCode.ClosingData, "Abort successful.")
+        
 
     def handle_help(self, args):
         topic = args.strip().upper()
@@ -533,3 +658,6 @@ class ControlChannel:
         else:
             self._send_response(ReplyCode.CommandNotImplemented, f"No help for {topic}.")
 
+
+if __name__ == "__main__":
+    print(MAX_PAYLOAD)
