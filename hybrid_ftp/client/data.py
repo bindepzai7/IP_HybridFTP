@@ -1,5 +1,6 @@
 import socket
 import struct
+import time
 
 class DataChannel:
     def __init__(self):
@@ -24,6 +25,7 @@ class DataChannel:
         try:
             for i in range(0, len(data), chunk_size):
                 self.sock.sendto(data[i:i+chunk_size], self.peer)
+                time.sleep(0.001)
         except KeyboardInterrupt:
             print("\n[Client] Interupting.")
             raise
