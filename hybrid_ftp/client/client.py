@@ -3,7 +3,7 @@ import re
 
 from .data import DataChannel
 from .control import ControlChannel
-from ..common.mode import TransferMode, TransferEngine
+from common.mode import TransferMode, TransferEngine
 
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
 os.makedirs(STORAGE_DIR, exist_ok=True)
