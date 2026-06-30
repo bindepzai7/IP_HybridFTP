@@ -5,7 +5,7 @@ import zlib
 
 from .reply_code import ReplyCode, DefaultMessage
 from .data import ActiveDataChannel, PassiveDataChannel, MAX_PAYLOAD
-from ..common.mode import TransferMode, TransferEngine
+from common.mode import TransferMode, TransferEngine
 
 BASIC_COMMANDS = (
     "USER <username>",
