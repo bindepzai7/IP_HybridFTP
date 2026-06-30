@@ -1,6 +1,6 @@
 import uuid
 from .filesystem import FileSystem
-from ..common.mode import TransferMode
+from common.mode import TransferMode
 
 class Session:
     def __init__(self, authenticator):
