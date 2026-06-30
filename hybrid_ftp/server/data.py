@@ -1,6 +1,7 @@
 import socket
 from abc import ABC, abstractmethod
 import struct
+import time
 
 MAX_PAYLOAD = 1024
 
@@ -23,6 +24,7 @@ class DataChannel(ABC):
 
         for i in range(0, len(data), chunk_size):
             self.sock.send(data[i:i+chunk_size])
+            time.sleep(0.001)
         
     def send_file(self, data: bytes, chunk_size=1024):
         if not self.peer:
@@ -30,6 +32,7 @@ class DataChannel(ABC):
         self.sock.sendto(struct.pack("!I", len(data)), self.peer)
         for i in range(0, len(data), chunk_size):
             self.sock.sendto(data[i:i + chunk_size], self.peer)
+            time.sleep(0.001)
     
     def recv_bytes(self):
         data, addr = self.sock.recvfrom(MAX_PAYLOAD)
