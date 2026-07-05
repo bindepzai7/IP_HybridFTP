@@ -386,7 +386,7 @@ class ControlChannel:
             while len(file_data) < total_size:
                 chunk = self.session.data_channel.recv_bytes()
                 file_data.extend(chunk)
-            decoded_data = TransferEngine.decode_data(file_data)
+            decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
             self.session.fs.append_file(filename, decoded_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete and file appended.")
         except Exception as e:
