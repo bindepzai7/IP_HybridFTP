@@ -216,3 +216,13 @@ class FTPClient:
         self.data.send(payload)
         print(f"[Client] Sent {len(payload)} bytes (STOU)")
         self._finish_transfer()
+        
+    def abort(self):
+        print("[Client] Sending ABOR...")
+        self.control.send_line("ABOR")
+        while True:
+            resp = self.control.read_line()
+            print(resp)
+            if resp.startswith("225") or resp.startswith("226"):
+                break
+        self.disconnect_data()
