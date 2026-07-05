@@ -79,8 +79,8 @@ def main():
             try:
                 client.retr(remote, local)
             except KeyboardInterrupt:
-                print("\n[Client] Interrupt by user. Sending ABOR...")
-                client._send_cmd("ABOR")
+                print("\n[Client] Interrupt by user.")
+                client.abort()
             except Exception as e:
                 print(f"[!] {e}")
             continue
@@ -96,8 +96,8 @@ def main():
             try:
                 client.stor(local, remote)
             except KeyboardInterrupt:
-                print("\n[Client] Interrupt by user. Sending ABOR...")
-                client._send_cmd("ABOR")
+                print("\n[Client] Interrupt by user.")
+                client.abort()
             except Exception as e:
                 print(f"[!] {e}")
             continue
@@ -113,8 +113,8 @@ def main():
             try:
                 client.appe(local, remote)
             except KeyboardInterrupt:
-                print("\n[Client] Interrupt by user. Sending ABOR...")
-                client._send_cmd("ABOR")
+                print("\n[Client] Interrupt by user.")
+                client.abort()
             except Exception as e:
                 print(f"[!] {e}")
             continue
@@ -129,8 +129,8 @@ def main():
             try:
                 client.stou(local)
             except KeyboardInterrupt:
-                print("\n[Client] Interrupt by user. Sending ABOR...")
-                client._send_cmd("ABOR")
+                print("\n[Client] Interrupt by user.")
+                client.abort()
             except Exception as e:
                 print(f"[!] {e}")
             continue
