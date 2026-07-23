@@ -224,3 +224,6 @@ Project1_SocketProgramming_2026.pdf
 
 # Data in client
 hybrid_ftp/client/storage/
+
+# Hide tests
+hybrid_ftp/common/tests
