@@ -379,13 +379,7 @@ class ControlChannel:
             self._send_response(ReplyCode.OpeningData)
             self.session.data_channel.establish()
             
-            meta = self.session.data_channel.recv_bytes()
-            total_size = struct.unpack("!I", meta)[0]
-            
-            file_data = bytearray()
-            while len(file_data) < total_size:
-                chunk = self.session.data_channel.recv_bytes()
-                file_data.extend(chunk)
+            file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
             self.session.fs.append_file(filename, decoded_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete and file appended.")
@@ -529,18 +523,12 @@ class ControlChannel:
         try:
             self._send_response(ReplyCode.OpeningData)
             self.session.data_channel.establish()
-            
-            meta = self.session.data_channel.recv_bytes()
-            total_size = struct.unpack("!I", meta)[0]
-            
-            file_data = bytearray()
-            while len(file_data) < total_size:
-                chunk = self.session.data_channel.recv_bytes()
-                file_data.extend(chunk)
-                
+
+            file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
             self.session.fs.write_file(filename, decoded_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete and file saved.")
+
         except Exception as e:
             print(f"[STOR] File receiving error: {e}")
             self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
@@ -559,23 +547,18 @@ class ControlChannel:
         
         if line:
             self._send_response(ReplyCode.ArgumentSyntaxError)
-        
+            return
+
         try:
             unique_name = self.session.fs.generate_unique_name()
             self._send_response(ReplyCode.OpeningData, f"FILE: {unique_name}")
             self.session.data_channel.establish()
-            
-            meta = self.session.data_channel.recv_bytes()
-            total_size = struct.unpack("!I", meta)[0]
-            
-            file_data = bytearray()
-            while len(file_data) < total_size:
-                chunk = self.session.data_channel.recv_bytes()
-                file_data.extend(chunk)
+
+            file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
             self.session.fs.write_file(unique_name, decoded_data)
             self._send_response(ReplyCode.ClosingData, f"Transfer complete. Stored as {unique_name}.")
-            
+
         except Exception as e:
             print(f"[STOU] File receiving error: {e}")
             self._send_response(ReplyCode.ConnectionClosed, "Transfer aborted.")
@@ -615,7 +598,8 @@ class ControlChannel:
             return
         if line:
             self._send_response(ReplyCode.CommandSyntaxError)
-        try: 
+            return
+        try:
             self.session.close_data_channel()
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(("", 0))

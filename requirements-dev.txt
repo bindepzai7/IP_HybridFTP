@@ -1,0 +1,8 @@
+# Development-only dependencies (NOT required to run the application).
+# The Hybrid FTP app itself uses only the Python standard library.
+# These are for running the automated test suite.
+#
+#   pip install -r requirements-dev.txt
+#   cd hybrid_ftp && python -m pytest
+
+pytest>=8.0

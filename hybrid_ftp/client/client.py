@@ -4,6 +4,7 @@ import re
 from .data import DataChannel
 from .control import ControlChannel
 from common.mode import TransferMode, TransferEngine
+import hashlib
 
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
 os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -13,7 +14,27 @@ class FTPClient:
         self.control = ControlChannel()
         self.data = None
         self.mode = TransferMode.STREAM
-        
+
+    def _sha256_file(self, path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def verify_hash(self, remote_name: str, local_path: str) -> bool:
+        resp = self._send_cmd(f"HASH {remote_name}")     # control channel, after transfer done
+        if not resp.startswith("213"):
+            print(f"[Verify] HASH unavailable: {resp}")
+            return False
+        server_hash = resp.strip().split()[-1]           # "213 SHA256 <hex>" -> <hex>
+        local_hash = self._sha256_file(local_path)
+        if server_hash.lower() == local_hash.lower():
+            print(f"[Verify] ✓ Integrity OK  sha256={local_hash}")
+            return True
+        print(f"[Verify] ✗ MISMATCH  local={local_hash}  server={server_hash}")
+        return False
+            
     def connect(self, host, port):
         self.control.connect(host, port)
         
@@ -122,8 +143,9 @@ class FTPClient:
         with open(local_path, "wb") as f:
             f.write(raw_data)
         print(f"[Client] Saved → storage/{local_filename}")
-        
+
         self._finish_transfer()
+        self.verify_hash(remote_name, local_path)
         
     def stor(self, local_filename, remote_name):
         if self.data is None:
@@ -146,6 +168,7 @@ class FTPClient:
         self.data.send(payload)
         print(f"[Client] Sent {len(payload)} (encoded) bytes → {remote_name}")
         self._finish_transfer()
+        self.verify_hash(remote_name, local_path)
     
     def list_dir(self, path: str = ""):
         if self.data is None:

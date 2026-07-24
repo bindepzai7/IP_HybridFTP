@@ -13,23 +13,31 @@ class FTPServer:
         
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
+        self._running = False
+
     def start(self):
         self.sock.bind((self.host, self.port))
         self.sock.listen()
-        
-        print(f"FTP Server listening on {self.host}:{self.port}")
-        
-        while True:
-            client_sock, addr = self.sock.accept()
+        self._running = True
+
+        print(f"FTP Server listening on {self.sock.getsockname()}")
+
+        while self._running:
+            try:
+                client_sock, addr = self.sock.accept()
+            except OSError:
+                if not self._running:
+                    break  # socket closed by stop() during shutdown
+                raise
             thread = threading.Thread(
                 target=self._handle_client,
                 args=(client_sock, addr),
                 daemon=True,
             )
             thread.start()
-            
+
     def stop(self):
+        self._running = False
         self.sock.close()
             
     def _handle_client(self, client_sock, addr):
