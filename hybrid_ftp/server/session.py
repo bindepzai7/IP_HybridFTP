@@ -9,6 +9,7 @@ class Session:
 
         self.username = None
         self.logged_in = False
+        self.remote_addr = None
 
         self.data_channel = None
 

@@ -33,10 +33,11 @@ BASIC_COMMANDS = (
 
 
 class ControlChannel:
-    def __init__(self, client_sock, session, client_addr=None):
+    def __init__(self, client_sock, session, client_addr=None, registry=None):
         self.sock = client_sock
         self.session = session
         self.client_addr = client_addr
+        self.registry = registry
         # self.session.fs = FileSystem()
 
         self.handlers = {
@@ -98,6 +99,10 @@ class ControlChannel:
 
         response = f"{int(code)} {msg}\r\n"
         self.sock.sendall(response.encode())
+
+    def _refresh_sessions(self) -> None:
+        if self.registry is not None:
+            self.registry.print_table()
 
     def _require_login(self) -> bool:
         if not self.session.logged_in:
@@ -200,6 +205,7 @@ class ControlChannel:
 
         self.session.login()
         self._send_response(ReplyCode.LoggedInProceed)
+        self._refresh_sessions()
 
     def handle_quit(self, line):
         if line:
@@ -233,6 +239,7 @@ class ControlChannel:
         try:
             self.session.fs.cwd(path)
             self._send_response(ReplyCode.FileActionOK, "Directory changed.")
+            self._refresh_sessions()
         except FileNotFoundError:
             self._send_response(ReplyCode.ActionNotTakenFileUnavailable)
         except ValueError:
@@ -244,6 +251,7 @@ class ControlChannel:
 
         self.session.fs.cdup()
         self._send_response(ReplyCode.FileActionOK, "Directory changed.")
+        self._refresh_sessions()
 
     def handle_mkd(self, args):
         if not self._require_login():
