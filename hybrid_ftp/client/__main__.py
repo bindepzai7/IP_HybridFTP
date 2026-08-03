@@ -3,8 +3,8 @@ from .client import FTPClient
 import traceback
 
 def main():
-    host = "127.0.0.1"
-    port = 2121
+    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 2121
 
     client = FTPClient()
 

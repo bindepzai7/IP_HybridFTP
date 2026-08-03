@@ -589,8 +589,8 @@ class ControlChannel:
             
             self.session.close_data_channel()
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(("", 0))
-            
+            sock.bind((self.sock.getsockname()[0], 0))
+
             self.session.data_channel = ActiveDataChannel(sock, host, port)
             
             self._send_response(ReplyCode.CommandOK)
@@ -610,9 +610,9 @@ class ControlChannel:
         try:
             self.session.close_data_channel()
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(("", 0))
-            
-            host =  self.sock.getsockname()[0]
+            host = self.sock.getsockname()[0]
+            sock.bind((host, 0))
+
             _, port = sock.getsockname()
             
             self.session.data_channel = PassiveDataChannel(sock)
