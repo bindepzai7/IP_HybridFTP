@@ -114,6 +114,36 @@ def test_upload_download_roundtrip(logged_in_client, sample_file):
         assert f.read() == content
 
 
+def test_transfer_without_manual_pasv(logged_in_client, sample_file):
+    """STOR/RETR auto-negotiate passive mode when no PASV/PORT was issued."""
+    c = logged_in_client
+    name, content = sample_file
+
+    # Note: no c.set_passive_mode() here -- the client should default to it.
+    c.stor(name, name)
+    c.retr(name, "e2e_download.txt")
+
+    with open(os.path.join(STORAGE_DIR, "e2e_download.txt"), "rb") as f:
+        assert f.read() == content
+
+
+def test_verify_hash_silent_by_default(logged_in_client, sample_file, capsys):
+    """Default client stays silent on a successful integrity check."""
+    c = logged_in_client
+    name, _ = sample_file
+    c.stor(name, name)
+    assert "MATCH" not in capsys.readouterr().out
+
+
+def test_verify_hash_verbose_prints_match(logged_in_client, sample_file, capsys):
+    """With verbose_hash on, a successful check is reported."""
+    c = logged_in_client
+    c.verbose_hash = True
+    name, _ = sample_file
+    c.stor(name, name)
+    assert "SHA-256 MATCH" in capsys.readouterr().out
+
+
 def test_hash_matches_after_upload(logged_in_client, sample_file):
     c = logged_in_client
     name, _ = sample_file

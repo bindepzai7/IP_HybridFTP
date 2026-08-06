@@ -9,11 +9,14 @@ import hashlib
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-class FTPClient: 
-    def __init__(self):
+class FTPClient:
+    def __init__(self, verbose_hash=False):
         self.control = ControlChannel()
         self.data = None
         self.mode = TransferMode.STREAM
+        # When False, a successful integrity check stays silent (like pip/apt);
+        # a MISMATCH is always reported. Enable with the --verify_hash CLI flag.
+        self.verbose_hash = verbose_hash
 
     def _sha256_file(self, path: str) -> str:
         h = hashlib.sha256()
@@ -23,16 +26,29 @@ class FTPClient:
         return h.hexdigest()
 
     def verify_hash(self, remote_name: str, local_path: str) -> bool:
-        resp = self._send_cmd(f"HASH {remote_name}")     # control channel, after transfer done
+        # Send HASH quietly (bypass _send_cmd's echo) so the report below
+        # is the only integrity output the user sees.
+        self.control.send_line(f"HASH {remote_name}")
+        resp = self.control.read_line()
+
         if not resp.startswith("213"):
-            print(f"[Verify] HASH unavailable: {resp}")
+            if self.verbose_hash:
+                print(f"[Verify] skipped - server could not hash '{remote_name}': {resp}")
             return False
-        server_hash = resp.strip().split()[-1]           # "213 SHA256 <hex>" -> <hex>
-        local_hash = self._sha256_file(local_path)
-        if server_hash.lower() == local_hash.lower():
-            print(f"[Verify] ✓ Integrity OK  sha256={local_hash}")
+
+        server_hash = resp.split()[-1].lower()   # "213 SHA256 <hex>" -> <hex>
+        local_hash = self._sha256_file(local_path).lower()
+
+        if server_hash == local_hash:
+            if self.verbose_hash:
+                print(f"[Verify] SHA-256 MATCH - '{remote_name}' transferred intact")
+                print(f"         {local_hash}")
             return True
-        print(f"[Verify] ✗ MISMATCH  local={local_hash}  server={server_hash}")
+
+        # A mismatch means corruption slipped through - always report it.
+        print(f"[Verify] SHA-256 MISMATCH - '{remote_name}' may be corrupted")
+        print(f"         local : {local_hash}")
+        print(f"         server: {server_hash}")
         return False
             
     def connect(self, host, port):
@@ -114,6 +130,17 @@ class FTPClient:
         print(f"[Data] Active: listening on {host}:{actual_port}")
         return host, actual_port    
 
+    def _ensure_data_channel(self):
+        """Default to passive mode when no data channel is set up yet.
+
+        Mirrors how real FTP clients (ftplib, lftp, browsers) auto-negotiate a
+        data connection per transfer instead of requiring a manual PASV/PORT.
+        An explicit PASV or PORT beforehand is still honored, since it sets
+        self.data and this becomes a no-op.
+        """
+        if self.data is None:
+            self.set_passive_mode()
+
     def set_transfer_mode(self, mode_char: str):
         mode_char = mode_char.upper()
         try:
@@ -129,8 +156,7 @@ class FTPClient:
             print(f"[Client] Internal mode updated to {target_mode.name}")
 
     def retr(self, remote_name, local_filename):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
         
         local_filename = local_filename or remote_name
         local_path = self._storage_path(local_filename)
@@ -148,8 +174,7 @@ class FTPClient:
         self.verify_hash(remote_name, local_path)
         
     def stor(self, local_filename, remote_name):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
         
         local_path = self._storage_path(local_filename)
         remote_name = remote_name or os.path.basename(local_filename)
@@ -171,8 +196,7 @@ class FTPClient:
         self.verify_hash(remote_name, local_path)
     
     def list_dir(self, path: str = ""):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
         
         cmd = f"LIST {path}".strip()
         resp = self._send_cmd(cmd)
@@ -184,8 +208,7 @@ class FTPClient:
         self._finish_transfer()
     
     def nlst(self, path: str=""):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
 
         cmd = f"NLST {path}".strip()
         resp = self._send_cmd(cmd)
@@ -200,8 +223,7 @@ class FTPClient:
         self.disconnect_data()
         
     def appe(self, local_filename, remote_name):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
         
         local_path = self._storage_path(local_filename)
         remote_name = remote_name or os.path.basename(local_filename)
@@ -220,8 +242,7 @@ class FTPClient:
         self._finish_transfer()
         
     def stou(self, local_filename):
-        if self.data is None:
-            raise ConnectionError("No data channel connection.")
+        self._ensure_data_channel()
         
         local_path = self._storage_path(local_filename)
         

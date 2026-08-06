@@ -20,6 +20,9 @@ class FTPServer:
     def start(self):
         self.sock.bind((self.host, self.port))
         self.sock.listen()
+        # Wake accept() periodically so a pending Ctrl+C (KeyboardInterrupt) can be
+        # delivered -- on Windows a blocking accept() cannot be interrupted by SIGINT.
+        self.sock.settimeout(1.0)
         self._running = True
 
         print(f"FTP Server listening on {self.sock.getsockname()}")
@@ -27,10 +30,13 @@ class FTPServer:
         while self._running:
             try:
                 client_sock, addr = self.sock.accept()
+            except socket.timeout:
+                continue  # no client this interval; loop back and re-check signals
             except OSError:
                 if not self._running:
                     break  # socket closed by stop() during shutdown
                 raise
+            client_sock.settimeout(None)  # control connection stays blocking
             thread = threading.Thread(
                 target=self._handle_client,
                 args=(client_sock, addr),

@@ -1,12 +1,22 @@
+import argparse
 import sys
 from .client import FTPClient
 import traceback
 
 def main():
-    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 2121
+    parser = argparse.ArgumentParser(prog="python -m client")
+    parser.add_argument("host", nargs="?", default="127.0.0.1")
+    parser.add_argument("port", nargs="?", type=int, default=2121)
+    parser.add_argument(
+        "--verify_hash",
+        action="store_true",
+        help="print the SHA-256 integrity check on successful transfers "
+             "(a mismatch is always reported)",
+    )
+    args = parser.parse_args()
+    host, port = args.host, args.port
 
-    client = FTPClient()
+    client = FTPClient(verbose_hash=args.verify_hash)
 
     try:
         client.connect(host, port)
