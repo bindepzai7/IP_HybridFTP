@@ -5,7 +5,7 @@ import zlib
 
 from .reply_code import ReplyCode, DefaultMessage
 from .data import ActiveDataChannel, PassiveDataChannel, MAX_PAYLOAD
-from common.mode import TransferMode, TransferEngine
+from common.mode import TransferMode, TransferEngine, AsciiCodec
 
 BASIC_COMMANDS = (
     "USER <username>",
@@ -389,6 +389,8 @@ class ControlChannel:
             
             file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
+            if self.session.type == "A":
+                decoded_data = AsciiCodec.to_local(decoded_data)
             self.session.fs.append_file(filename, decoded_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete and file appended.")
         except Exception as e:
@@ -500,6 +502,8 @@ class ControlChannel:
             return
         try:
             payload = self.session.fs.read_file(filename)
+            if self.session.type == "A":
+                payload = AsciiCodec.to_network(payload)
             encoded_payload = TransferEngine.encode_data(payload, self.session.mode)
             
             self._send_response(ReplyCode.OpeningData)
@@ -534,6 +538,8 @@ class ControlChannel:
 
             file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
+            if self.session.type == "A":
+                decoded_data = AsciiCodec.to_local(decoded_data)
             self.session.fs.write_file(filename, decoded_data)
             self._send_response(ReplyCode.ClosingData, "Transfer complete and file saved.")
 
@@ -564,6 +570,8 @@ class ControlChannel:
 
             file_data = self.session.data_channel.recv_file()
             decoded_data = TransferEngine.decode_data(file_data, self.session.mode)
+            if self.session.type == "A":
+                decoded_data = AsciiCodec.to_local(decoded_data)
             self.session.fs.write_file(unique_name, decoded_data)
             self._send_response(ReplyCode.ClosingData, f"Transfer complete. Stored as {unique_name}.")
 

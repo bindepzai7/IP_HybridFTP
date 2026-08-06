@@ -14,7 +14,8 @@ class Session:
         self.data_channel = None
 
         self.mode = TransferMode.STREAM
-        self.type = "A"
+        self.type = "I"  # default to binary (Image) so transfers are byte-exact
+                         # unless the client explicitly requests ASCII (TYPE A)
         self.rename_from = None
         
         self.fs = FileSystem()

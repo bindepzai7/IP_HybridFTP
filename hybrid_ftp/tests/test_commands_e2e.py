@@ -127,6 +127,45 @@ def test_transfer_without_manual_pasv(logged_in_client, sample_file):
         assert f.read() == content
 
 
+def test_ascii_mode_roundtrip(logged_in_client):
+    """A text file survives an ASCII-mode upload+download round-trip.
+
+    On a single host to_local(to_network(x)) is idempotent when x already uses
+    the local newline convention, so the downloaded copy equals the original.
+    """
+    c = logged_in_client
+    c.set_type("A")
+    name = "e2e_ascii.txt"
+    content = ("alpha" + os.linesep + "beta" + os.linesep + "gamma").encode()
+    local = os.path.join(STORAGE_DIR, name)
+    with open(local, "wb") as f:
+        f.write(content)
+
+    try:
+        c.stor(name, name)
+        c.retr(name, "e2e_ascii_dl.txt")
+        with open(os.path.join(STORAGE_DIR, "e2e_ascii_dl.txt"), "rb") as f:
+            assert f.read() == content
+    finally:
+        for p in (local, os.path.join(STORAGE_DIR, "e2e_ascii_dl.txt"),
+                  os.path.join(ROOT_DIR, name)):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def test_ascii_mode_skips_hash(logged_in_client, sample_file, capsys):
+    """Hash verification is skipped in ASCII mode (bytes differ by newline)."""
+    c = logged_in_client
+    c.verbose_hash = True
+    c.set_type("A")
+    name, _ = sample_file
+    c.stor(name, name)
+    out = capsys.readouterr().out
+    assert "MATCH" not in out
+
+
 def test_verify_hash_silent_by_default(logged_in_client, sample_file, capsys):
     """Default client stays silent on a successful integrity check."""
     c = logged_in_client

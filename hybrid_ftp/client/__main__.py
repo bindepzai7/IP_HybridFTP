@@ -149,15 +149,26 @@ def main():
             if len(tokens) < 2:
                 print("Usage: MODE <S|B|C>")
                 continue
-            
+
             try:
                 client.set_transfer_mode(tokens[1])
             except Exception as e:
                 print(f"[!] {e}")
             continue
+
+        if cmd == "TYPE":
+            if len(tokens) < 2:
+                print("Usage: TYPE <A|I>")
+                continue
+
+            try:
+                client.set_type(tokens[1])
+            except Exception as e:
+                print(f"[!] {e}")
+            continue
         # Pass-through commands
         # USER, PASS, PWD, CWD, CDUP, MKD, RMD,
-        # DELE, RNFR, RNTO, SIZE, TYPE, NOOP, etc.
+        # DELE, RNFR, RNTO, SIZE, NOOP, etc.
         try:
             client._send_cmd(raw)
         except Exception as e:

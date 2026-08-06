@@ -3,7 +3,7 @@ import re
 
 from .data import DataChannel
 from .control import ControlChannel
-from common.mode import TransferMode, TransferEngine
+from common.mode import TransferMode, TransferEngine, AsciiCodec
 import hashlib
 
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "storage"))
@@ -14,6 +14,10 @@ class FTPClient:
         self.control = ControlChannel()
         self.data = None
         self.mode = TransferMode.STREAM
+        # Default to binary (Image) so no file is ever corrupted by accident;
+        # TYPE A opts into ASCII newline translation. (RFC 959 defaults to A,
+        # but binary-by-default avoids the classic ASCII-corrupts-binaries trap.)
+        self.type = "I"
         # When False, a successful integrity check stays silent (like pip/apt);
         # a MISMATCH is always reported. Enable with the --verify_hash CLI flag.
         self.verbose_hash = verbose_hash
@@ -150,10 +154,31 @@ class FTPClient:
             return
 
         resp = self._send_cmd(f"MODE {mode_char}")
-        
+
         if resp.startswith("200"):
             self.mode = target_mode
             print(f"[Client] Internal mode updated to {target_mode.name}")
+
+    def set_type(self, type_char: str):
+        type_char = type_char.upper()
+        if type_char not in ("A", "I"):
+            print("Invalid type. Use A (ASCII) or I (Image/binary).")
+            return
+
+        resp = self._send_cmd(f"TYPE {type_char}")
+        if resp.startswith("200"):
+            self.type = type_char
+            label = "ASCII" if type_char == "A" else "Binary"
+            print(f"[Client] Transfer type set to {label}.")
+
+    def _maybe_verify_hash(self, remote_name, local_path):
+        """Hash verification is only meaningful for byte-exact (binary) transfers.
+        In ASCII mode the two sides' files differ by newline convention, so the
+        SHA-256 digests would legitimately not match -- skip the check."""
+        if self.type == "I":
+            self.verify_hash(remote_name, local_path)
+        elif self.verbose_hash:
+            print("[Verify] skipped - integrity hash applies to binary (TYPE I) transfers only")
 
     def retr(self, remote_name, local_filename):
         self._ensure_data_channel()
@@ -165,13 +190,15 @@ class FTPClient:
         self._expect(resp, "125", "150")
         data_bytes = self.data.receive()
         raw_data = TransferEngine.decode_data(data_bytes, self.mode)
-        
+        if self.type == "A":
+            raw_data = AsciiCodec.to_local(raw_data)
+
         with open(local_path, "wb") as f:
             f.write(raw_data)
         print(f"[Client] Saved → storage/{local_filename}")
 
         self._finish_transfer()
-        self.verify_hash(remote_name, local_path)
+        self._maybe_verify_hash(remote_name, local_path)
         
     def stor(self, local_filename, remote_name):
         self._ensure_data_channel()
@@ -184,16 +211,18 @@ class FTPClient:
         
         with open(local_path, "rb") as f:
             raw_data = f.read()
-        
+        if self.type == "A":
+            raw_data = AsciiCodec.to_network(raw_data)
+
         payload = TransferEngine.encode_data(raw_data, self.mode)
-        
+
         resp = self._send_cmd(f"STOR {remote_name}")
-        
+
         self._expect(resp, "125", "150")
         self.data.send(payload)
         print(f"[Client] Sent {len(payload)} (encoded) bytes → {remote_name}")
         self._finish_transfer()
-        self.verify_hash(remote_name, local_path)
+        self._maybe_verify_hash(remote_name, local_path)
     
     def list_dir(self, path: str = ""):
         self._ensure_data_channel()
@@ -233,6 +262,8 @@ class FTPClient:
         
         with open(local_path, "rb") as f:
             raw_data = f.read()
+        if self.type == "A":
+            raw_data = AsciiCodec.to_network(raw_data)
         payload = TransferEngine.encode_data(raw_data, self.mode)
         resp = self._send_cmd(f"APPE {remote_name}")
         
@@ -251,9 +282,11 @@ class FTPClient:
         
         with open(local_path, "rb") as f:
             raw_data = f.read()
-            
+        if self.type == "A":
+            raw_data = AsciiCodec.to_network(raw_data)
+
         payload = TransferEngine.encode_data(raw_data, self.mode)
-        
+
         resp = self._send_cmd("STOU")
         
         self._expect(resp, "125", "150")
