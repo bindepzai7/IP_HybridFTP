@@ -1,221 +1,313 @@
-# Hybrid FTP — Code Documentation
+# Hybrid FTP — Project Reference
 
-This document explains how each function in the main project files works. The application uses **TCP** for the control channel (commands/responses) and **UDP** for file transfers.
+A client–server file-transfer system that splits the **control plane** from the
+**data plane**: commands travel over **TCP**, file payload travels over a
+**custom reliable-UDP protocol** built from scratch (Selective Repeat + AIMD).
+This document maps every command, file, and key method for study and oral defense.
 
-## Architecture Overview
-
-```
-Client (client.py)                    Server (server.py)
-      │                                      │
-      │──── TCP :2121 (USER, PASS, STOR…) ──►│ control.py
-      │◄─── FTP reply codes (220, 150, 226) ─│
-      │                                      │
-      │──── UDP (file payload) ────────────────►│ data.py
-```
-
-At basic level, the data channel is opened **implicitly** when `STOR` or `RETR` runs — no `PASV`/`PORT` command is required from the user.
-
----
-
-## Server
-
-### `server/server.py`
-
-Entry point for the FTP server.
-
-| Function / Method | Description |
+| | |
 |---|---|
-| `FTPServer.__init__(host, port, authenticator)` | Creates a TCP listening socket on `host:port` (default `0.0.0.0:2121`). Enables `SO_REUSEADDR` and sets a 0.5s accept timeout so `KeyboardInterrupt` can be handled cleanly. |
-| `FTPServer.start()` | Binds, listens, then loops forever accepting client connections. For each client, creates a `Session` and runs `ControlChannel.run()`. Handles `Ctrl+C` shutdown. |
-| `main()` | Creates an `Authenticator`, seeds default account `user`/`password` if missing, then starts the server. |
-| `if __name__ == "__main__"` | Runs `main()` when executed directly. |
+| Lines of Python (SLOC) | ~1,878 |
+| FTP commands | 28 |
+| Source modules | 16 |
+| Target level | Excellent |
+| Server | `python -m server` (from `hybrid_ftp/`, host `0.0.0.0`, port `2121`) |
+| Client | `python -m client` (from `hybrid_ftp/`) |
 
 ---
 
-### `server/control.py`
+## 1. Overview
 
-Handles all FTP commands over the TCP control connection.
+The project mirrors RFC 959's architecture: two independent channels cooperating over one session.
 
-#### `ControlChannel` class
+- **Control channel — TCP** *(reliable, ordered)*
+  Carries commands and three-digit reply codes. TCP guarantees ordered, lossless
+  delivery, so session state (login, working directory, transfer settings) stays
+  consistent. One persistent socket per client for the whole session.
 
-| Function / Method | Description |
+- **Data channel — UDP + custom RDT** *(built from scratch)*
+  Carries the actual file bytes over UDP. Because UDP is unreliable, a custom
+  application-layer protocol adds ACKs, sequence numbers, checksums,
+  retransmission, ordering, and duplicate elimination — Selective Repeat with
+  AIMD congestion control. A fresh data channel is opened per transfer.
+
+Every file operation is a coordinated dance between the two: a command travels
+the TCP control channel, the server replies `150 Opening data connection`, the
+bytes stream over the UDP data channel, and the server closes with
+`226 Transfer complete`.
+
+---
+
+## 2. Architecture — the layers
+
+Read bottom-up: each layer builds on the one below it. This is also the
+recommended study order.
+
+| Layer | Modules |
 |---|---|
-| `__init__(client_sock, session, client_addr)` | Stores the client TCP socket, session state, client address, and a `FileSystem` instance. Builds a `handlers` dict mapping command names (e.g. `"USER"`) to handler methods. |
-| `_process_command(line)` | Parses a raw command line into `cmd` + `arg`, looks up the handler, logs the command to the server console, and dispatches it. Returns `"CLOSE"` for `QUIT`, or `None` on errors. |
-| `_send_response(code, custom_msg)` | Sends a standard FTP reply (`"220 Message\r\n"`) over TCP. Uses `DefaultMessage` unless a custom message is provided. |
-| `_require_login()` | Returns `False` and sends `530 Not logged in` if the session is not authenticated. |
-| `_data_host_for_reply()` | Determines which IP address to advertise for the UDP data channel (client address, bound host, or `127.0.0.1`). |
-| `_format_data_endpoint(host, port)` | Formats host/port as FTP-style tuple `(h1,h2,h3,h4,p1,p2)` embedded in `150` responses. |
-| `_open_data_channel()` | Opens a UDP socket on a random port, stores it in the session, and returns `(host, port)`. Called automatically before each transfer. |
-| `run()` | Sends `220 Service ready`, then reads commands in a loop until disconnect or `QUIT`. Cleans up data channel and socket on exit. |
+| **7 · Orchestration** | `server.py` (accept loop, one thread per client), `client.py` (high-level ops), `__main__.py` (entry points / CLI) |
+| **5–6 · Control plane & server state** | `control.py`, `session.py`, `auth.py`, `filesystem.py`, `registry.py`, `reply_code.py` |
+| **3–4 · Data channels & encoding** | `server/data.py`, `client/data.py`, `mode.py` |
+| **1–2 · Reliable-UDP core** | `packet.py` (wire format), `rdt.py` (Selective Repeat + AIMD + rwnd) |
 
-#### Command handlers
+---
 
-| Handler | Description |
+## 3. File map
+
+Owners: **A** = Member A (ID 23125005) · **B** = Member B (Doan Duc Tuan, ID 23125021).
+Plane: **TCP** = control, **UDP** = data.
+
+| Module | Plane | Responsibility | Owner |
+|---|---|---|---|
+| `common/packet.py` | UDP | Packet dataclass, 15-byte header, CRC32 checksum, (de)serialisation | B |
+| `common/rdt.py` | UDP | ReliableUDP — Selective Repeat, AIMD congestion window, rwnd bound, FIN handshake | B |
+| `common/mode.py` | UDP | AsciiCodec (TYPE A/I) + TransferEngine (MODE S/B/C) | B |
+| `server/control.py` | TCP | Command parsing, dispatch table, all ~28 handlers | A |
+| `server/reply_code.py` | TCP | Three-digit FTP reply-code enum + default messages | A |
+| `server/auth.py` | TCP | Authenticator — users.json, SHA-256 password store | B |
+| `server/session.py` | TCP | Per-client Session state (login, cwd, channel, TYPE/MODE) | B |
+| `server/filesystem.py` | TCP | Sandboxed file/dir operations, path-traversal guard, SHA-256 | A |
+| `server/registry.py` | TCP | Thread-safe active-session table | A |
+| `server/data.py` | UDP | DataChannel ABC + Active/Passive establishment | A |
+| `server/server.py` | TCP | Accept loop, one daemon thread per client | B |
+| `client/client.py` | TCP | High-level ops (RETR/STOR/…), auto hash verification | A |
+| `client/control.py` | TCP | Client control-channel line I/O | B |
+| `client/data.py` | UDP | Client UDP socket + RDT invocation, address kickoff | A |
+| `client/__main__.py` | TCP | Interactive `ftp>` prompt, command parsing | B |
+| `server/__main__.py` | TCP | Server entry point (host 0.0.0.0, port 2121) | B |
+
+---
+
+## 4. FTP command reference
+
+Every command travels the TCP control channel. Commands marked **data** open a
+UDP data channel to move bytes.
+
+| Command | Syntax | Purpose | Uses |
+|---|---|---|---|
+| `USER` | `USER <user>` | Begin authentication with a username | |
+| `PASS` | `PASS <pw>` | Complete authentication with a password | |
+| `QUIT` | `QUIT` | End the session gracefully (returns CLOSE) | |
+| `NOOP` | `NOOP` | Keep-alive ping; no operation | |
+| `PWD` | `PWD` | Print current working directory | |
+| `CWD` | `CWD <path>` | Change working directory | |
+| `CDUP` | `CDUP` | Move to parent directory (clamped at root) | |
+| `MKD` | `MKD <dir>` | Create a directory | |
+| `RMD` | `RMD <dir>` | Remove an empty directory | |
+| `LIST` | `LIST [path]` | Detailed `ls -l`-style listing | data |
+| `NLST` | `NLST [path]` | Plain name-only listing | data |
+| `STAT` | `STAT [path]` | Session status, or file/dir metadata | |
+| `SIZE` | `SIZE <file>` | Byte size of a file | |
+| `MDTM` | `MDTM <file>` | Last-modified time (YYYYMMDDhhmmss) | |
+| `TYPE` | `TYPE {A\|I}` | Set ASCII text or Image/binary representation | |
+| `MODE` | `MODE {S\|B\|C}` | Set Stream / Block / Compressed framing | |
+| `PORT` | `PORT h1..p2` | Active mode: client announces its data address | setup |
+| `PASV` | `PASV` | Passive mode: server opens a port, returns address | setup |
+| `RETR` | `RETR <file>` | Download a file (server → client) | data |
+| `STOR` | `STOR <file>` | Upload a file (client → server) | data |
+| `STOU` | `STOU` | Upload with a server-generated unique name | data |
+| `APPE` | `APPE <file>` | Append uploaded data to a file | data |
+| `DELE` | `DELE <file>` | Delete a file | |
+| `RNFR` | `RNFR <old>` | Rename step 1: mark source file | |
+| `RNTO` | `RNTO <new>` | Rename step 2: complete the rename | |
+| `HASH` | `HASH <file>` | Return SHA-256 digest for integrity check | |
+| `ABOR` | `ABOR` | Acknowledge abort of a transfer | |
+| `HELP` | `HELP [cmd]` | List commands or show one command's syntax | |
+
+---
+
+## 5. Reply codes
+
+Every server response is a three-digit code; the first digit is the category.
+The server funnels all replies through one `_send_response` method.
+
+| Class | Meaning | Examples used here |
+|---|---|---|
+| `1xx` | Positive preliminary — action starting | `150` opening data connection |
+| `2xx` | Positive completion — action done | `200` OK, `220` ready, `226` transfer complete, `230` logged in |
+| `3xx` | Positive intermediate — need more input | `331` need password, `350` pending RNTO |
+| `4xx` | Transient negative — try again | `425` can't open data, `426` aborted |
+| `5xx` | Permanent negative — request refused | `502` not implemented, `530` not logged in, `550` file unavailable |
+
+---
+
+## 6. Reliable UDP — the RDT core
+
+`ReliableUDP` in `rdt.py` turns an unreliable UDP socket into a reliable, ordered
+byte stream using **Selective Repeat** with **AIMD congestion control** and a
+**receive-window** flow-control bound.
+
+### Sender loop
+
+1. **Chunk** the file into 1024-byte packets, each with an increasing `seq` (`_create_packets`).
+2. **Fill the window** up to `min(cwnd, rwnd)` unacked packets in flight; record each with its own timer (`_fill_window`).
+3. **Process ACKs** individually — mark that packet delivered, then slide `send_base` past any contiguous run of acked packets (`_process_ack`).
+4. **Grow cwnd** on each new ACK: slow start (`+1`) below `ssthresh`, else congestion avoidance (`+1/cwnd`).
+5. **Check timeouts** per packet; retransmit only the one that expired, and on any timeout halve `ssthresh` and reset `cwnd` to 1 (multiplicative decrease).
+6. **FIN handshake** once everything is acked, to signal end of stream.
+
+### Receiver loop
+
+1. **Buffer out-of-order** packets within the window (`rcv_buffer`) and ACK every valid packet individually (`_process_data_packet`).
+2. **Deliver in order** — append to output only while packets are contiguous from `rcv_base` (`_slide_recv_window`).
+3. **Re-ACK duplicates** (already-delivered seqs) so a lost ACK is recovered without re-delivering data.
+
+> **Why it's Selective Repeat, not Go-Back-N:** individual (non-cumulative)
+> ACKs, receiver buffers out-of-order packets, and the sender retransmits only
+> the timed-out packet — never the whole window.
+
+### Constants
+
+| Constant | Value | Role |
+|---|---|---|
+| `MAX_PAYLOAD_SIZE` | 1024 | Max file bytes per packet |
+| `TIMEOUT` | 1.0 | Per-packet retransmit timer (s) |
+| `MAX_RETRIES` | 20 | Give up after this many resends |
+| `POLL_INTERVAL` | 0.05 | Socket timeout while polling for ACKs |
+| `INITIAL_SSTHRESH` | 64.0 | Slow-start threshold |
+| `RWND` | 64 | Receive-window bound (packets) |
+
+### Packet header (15 bytes, `!IIBHI`)
+
+| Bytes | Field | Meaning |
+|---|---|---|
+| 0–3 | `seq` | Sequence number of this packet |
+| 4–7 | `ack` | Which seq is being acknowledged |
+| 8 | `flags` | Bit flags: DATA=0x01, ACK=0x02, FIN=0x04 |
+| 9–10 | `length` | Payload byte count |
+| 11–14 | `checksum` | CRC32 over header + payload |
+
+---
+
+## 7. TYPE & MODE — two independent knobs
+
+These are orthogonal and applied in a strict nested order.
+
+| | Command | Controls | Values |
+|---|---|---|---|
+| **TYPE** | `TYPE A / I` | Representation — text vs binary | A = ASCII newline translation · I = byte-exact |
+| **MODE** | `MODE S / B / C` | Framing on the wire | S = Stream · B = Block (length-prefixed) · C = Compressed (zlib) |
+
+**Order matters — nested envelopes:**
+- Send: `TYPE (to_network)` → `MODE (encode_data)` → RDT
+- Receive: RDT → `MODE (decode_data)` → `TYPE (to_local)`
+
+The last transform applied on send is the first undone on receive.
+
+> **Integrity nuance:** hash verification only runs for `TYPE I`. In ASCII mode
+> the two sides' files differ by newline convention, so the SHA-256 digests would
+> legitimately not match — comparing them would report a false corruption.
+
+---
+
+## 8. Method reference
+
+### `packet.py`
+
+| Method | Does |
 |---|---|
-| `handle_user(line)` | Validates username exists in `users.json`. Sets pending username and replies `331` (need password). |
-| `handle_pass(line)` | Verifies password hash. On success, marks session logged in (`230`). On failure, clears username (`530`). |
-| `handle_quit(line)` | Logs out, sends `221`, returns `"CLOSE"` to end the session loop. |
-| `handle_noop(_args)` | No-operation keep-alive. Replies `200`. |
-| `handle_type(args)` | Sets transfer type: `TYPE A` (ASCII, line-ending conversion) or `TYPE I` (binary, raw bytes). |
-| `handle_retr(args)` | **Download.** Reads file, applies ASCII conversion only when `TYPE A`, sends over UDP, then `226`. |
-| `handle_stor(args)` | **Upload.** Receives over UDP, applies ASCII conversion only when `TYPE A`, saves to disk, then `226`. |
-| `handle_help(args)` | Lists supported basic commands, or shows syntax for a specific command. |
-| `handle_not_implemented(_args)` | Returns `502` for advanced commands (`LIST`, `CWD`, `PASV`, `PORT`, etc.). |
+| `compute_checksum()` | CRC32 over header (without the checksum field) + payload; the corruption fingerprint |
+| `to_bytes()` | Serialize: pack the 15-byte header (with checksum) + payload into wire bytes |
+| `from_bytes(data)` | Deserialize + validate — three checks (header present, length matches, checksum matches); raises `ValueError` on corruption |
+| `is_data / is_ack / is_fin` | Bit-flag tests on the 1-byte flags field |
 
----
+### `rdt.py` (ReliableUDP)
 
-### `server/session.py`
+| Method | Side | Does |
+|---|---|---|
+| `send(data)` | sender | Main loop: fill window → recv ACK → slide → grow cwnd → check timeouts → FIN |
+| `_create_packets(data)` | sender | Split data into numbered packets |
+| `_fill_window(...)` | sender | Send new packets up to `min(cwnd, rwnd)`; record per-packet timers |
+| `_process_ack(...)` | sender | Mark a packet acked; slide `send_base` over contiguous acks |
+| `_check_timeouts(...)` | sender | Retransmit expired packets individually; trigger multiplicative decrease |
+| `_update_cwnd_on_ack / _on_timeout` | sender | AIMD: additive increase on ACK, halve-and-reset on loss |
+| `recv()` | receiver | Main loop: validate, buffer, deliver in order, ACK, break on FIN |
+| `_process_data_packet(...)` | receiver | Window check, buffer out-of-order, ACK, re-ACK duplicates |
+| `_slide_recv_window(...)` | receiver | Deliver contiguous buffered payloads from `rcv_base` |
+| `recv_packet()` | both | recvfrom; auto-learns peer address on first contact |
 
-Tracks per-client state for one control connection.
+### `control.py`
 
-| Function / Method | Description |
+28 handlers, but four repeating patterns. Universal handler shape:
+`_require_login` → parse/validate → call `fs`/`data_channel` → translate result to a reply code.
+
+| Method | Does |
 |---|---|
-| `__init__(authenticator)` | Creates session with defaults: not logged in, `type = "A"`, no data socket. |
-| `set_user(username)` | Stores the username pending password verification. |
-| `login()` | Sets `logged_in = True` after successful `PASS`. |
-| `logout()` | Clears username and login flag on `QUIT`. |
-| `close_data_channel()` | Closes the UDP socket and resets `data_host`, `data_port`, `data_socket`. |
+| `run()` | Send 220 greeting, then loop reading control lines and dispatching until QUIT/disconnect |
+| `_process_command(line)` | Split cmd/arg, look up in the handlers dict, log the command, call the handler |
+| `_send_response(code, msg)` | Format and send a three-digit reply — the single reply funnel |
+| `_require_login()` | Guard: reply 530 if not authenticated |
+| `_require_data_connection()` | Guard: reply 425 if no data channel set up |
+| `handle_user / handle_pass` | Two-step auth state machine |
+| `handle_retr / handle_stor` | Transfer archetype: TYPE/MODE encode → 150 → establish → send_file/recv_file → 226 |
+| `handle_port / handle_pasv` | Active/Passive data-channel negotiation |
+| `handle_rnfr / handle_rnto` | Two-step rename state machine |
+| `handle_hash` | Return `213 SHA256 <hex>` for integrity verification |
 
----
+### `filesystem.py`
 
-### `server/auth.py`
-
-User authentication backed by `data/users.json`.
-
-| Function / Method | Description |
+| Method | Does |
 |---|---|
-| `__init__()` | Ensures `data/` directory and `users.json` exist (creates empty `{"users": {}}` if missing). |
-| `_load_users()` | Reads and parses `users.json`. |
-| `_save_users(data)` | Writes updated user data back to `users.json`. |
-| `_hash_password(password)` | Returns SHA-256 hex digest of the password. |
-| `user_exists(username)` | Returns `True` if username is in the user database. |
-| `add_user(username, password)` | Registers a new user with hashed password. Returns `False` if username already exists. |
-| `remove_user(username)` | Deletes a user. Returns `False` if not found. |
-| `authenticate(username, password)` | Compares password hash against stored hash. Returns `True` on match. |
+| `resolve_path(name)` | **The security boundary.** Normalize + abspath, then reject anything outside `ROOT_DIR` — stops path traversal (`../../etc/passwd`) |
+| `_in_root(path)` | `os.path.commonpath` check that a resolved path stays under root |
+| `cwd / cdup / pwd / display_path` | Navigation; `display_path` hides the server's real filesystem layout |
+| `read_file / write_file / append_file / delete_file` | File I/O behind RETR / STOR / APPE / DELE |
+| `format_list / format_nlst` | Directory listings for LIST / NLST |
+| `hash_file(name)` | Stream the file in 8 KB chunks into SHA-256; used by HASH |
 
----
+### `client.py`
 
-### `server/filesystem.py`
-
-Server-side file storage under `hybrid_ftp/data/root/`. User credentials stay in `data/users.json`.
-
-| Function / Method | Description |
+| Method | Does |
 |---|---|
-| `__init__()` | Ensures `data/root/` exists. Sets `current_directory` to that folder. |
-| `resolve_path(filename)` | Joins filename with current directory and resolves to absolute path. Raises `ValueError` if path escapes `ROOT_DIR` (path traversal protection). |
-| `file_exists(filename)` | Returns `True` if the resolved path is a regular file. |
-| `read_file(filename)` | Reads and returns file contents as `bytes`. Raises `FileNotFoundError` if missing. |
-| `write_file(filename, data)` | Writes `bytes` to disk, creating parent directories if needed. |
+| `retr / stor / appe / stou` | High-level transfers; mirror the server's TYPE/MODE order in reverse |
+| `_ensure_data_channel()` | Auto-negotiate passive mode if no channel is set up |
+| `set_passive_mode / set_active_mode` | Client side of PASV / PORT; parse or announce the data address |
+| `verify_hash(remote, local)` | Send HASH, compare server digest to local SHA-256; mismatch always reported |
+| `_maybe_verify_hash(...)` | Run the check only for binary (TYPE I) transfers |
+| `_storage_path(name)` | Client-side path-traversal guard for the `storage/` folder |
 
 ---
 
-### `server/data.py`
+## 9. End-to-end trace — `RETR` (passive, binary)
 
-UDP data channel for basic-level file transfer (no RDT).
+One download, touching every layer. This is the single most likely opening
+question in the oral defense.
 
-#### Protocol
-
-1. First datagram: 4-byte big-endian total file size
-2. Following datagrams: raw payload chunks (up to 1024 bytes each)
-3. No sequence numbers, ACKs, checksums, or retransmission
-
-#### `DataChannel` class
-
-| Method | Description |
-|---|---|
-| `__init__(data_socket, timeout)` | Wraps the session UDP socket and sets receive timeout. |
-| `_wait_for_peer()` | Blocks until a datagram arrives; returns sender address. |
-| `_send_bytes(data, peer_addr)` | Sends size header then file chunks to the peer. |
-| `_recv_bytes()` | Reads size header then chunks; returns `(data, peer_addr)`. |
-| `send_file(data)` | Waits for client, then sends the full file. |
-| `receive_file()` | Receives the full file and returns its bytes. |
+1. User types `RETR image.png` at the `ftp>` prompt — *client/__main__.py*
+2. Client auto-negotiates passive mode → sends `PASV` over TCP — *client.py · set_passive_mode*
+3. Server opens a UDP socket, replies `227 (…)` — *control.py · handle_pasv*
+4. Client binds a UDP socket, sends a `\x00` kickoff datagram — *client/data.py · set_peer*
+5. Server's `recvfrom` learns the client address — *server/data.py · PassiveDataChannel*
+6. Client sends `RETR image.png` over TCP — *client.py · retr*
+7. Server reads file → TYPE → MODE → replies `150` — *control.py · handle_retr*
+8. ReliableUDP windows packets, retransmits losses, ACKs, sends FIN — *rdt.py + packet.py*
+9. Client reassembles in order, decodes MODE + TYPE, writes file — *client.py + mode.py*
+10. Server closes with `226`; client sends `HASH`, compares SHA-256 — *verify_hash*
+11. All of this ran on this client's dedicated thread; others run concurrently — *server.py*
 
 ---
 
-### `server/reply_code.py`
+## 10. Viva key points
 
-Defines standard FTP three-digit reply codes.
-
-| Name | Description |
-|---|---|
-| `ReplyCode` (IntEnum) | All numeric codes used by the server (e.g. `220`, `331`, `530`, `150`, `226`, `502`). |
-| `DefaultMessage` (dict) | Maps each `ReplyCode` to its default human-readable message string. |
-
-No functions — this file is pure data/constants.
-
----
-
-## Client
-
-### `client/client.py`
-
-Interactive FTP client with a command-line interface. Local files are read/written under `hybrid_ftp/client/storage/`.
-
-| Function / Method | Description |
-|---|---|
-| `FTPClient.__init__(host, port, retry)` | Creates `storage/` if needed, opens TCP connection to the server (retries up to 5 times). Reads and prints the initial `220` greeting. |
-| `_storage_path(filename)` | Resolves a filename inside `client/storage/` and blocks path traversal. |
-| `_read_response()` | Reads from the TCP socket until a complete FTP response line is received (ends at `\r\n` after the status line). Handles multi-line responses. |
-| `_response_code(response)` | Extracts the 3-digit numeric code from a response string (e.g. `"150 ..."` → `150`). |
-| `send(cmd)` | Sends a command over TCP, reads and prints the response. Returns the response string. |
-| `_parse_data_endpoint(response)` | Extracts `(h1,h2,h3,h4,p1,p2)` from a `150` response and sets `self.data_host` / `self.data_port`. |
-| `upload(filename, remote_name)` | Reads `storage/filename`, sends `STOR`, transfers over UDP. |
-| `download(remote_name, local_filename)` | Sends `RETR`, receives over UDP, saves to `storage/`. |
-| `close()` | Closes the TCP control socket. |
-| `main()` | Runs the interactive `ftp>` prompt. `STOR` and `RETR` trigger the full UDP transfer; other commands are sent over TCP as-is. |
+- **Trace one RETR/STOR** through every layer (section 9) — the highest-value thing to have crisp.
+- **Selective Repeat vs Go-Back-N** — individual ACKs, out-of-order buffering, single-packet retransmit.
+- **Where AIMD lives** — `_update_cwnd_on_ack` (increase) and `_update_cwnd_on_timeout` (decrease); window = `min(cwnd, rwnd)`.
+- **Path-traversal defense** — `resolve_path` + `_in_root` via `os.path.commonpath`.
+- **Concurrency model** — one thread + one Session per client; shared session registry protected by a lock.
+- **Active vs Passive** — who already knows whose address, and the `\x00` kickoff for passive.
+- **Corruption path** — bad checksum → `from_bytes` raises → packet discarded → looks like loss → retransmit.
 
 ---
 
-### `client/data.py`
+## 11. Honest limitations
 
-Client-side `DataChannel` class (same UDP protocol as server).
+Name these before the examiner finds them — it signals real ownership rather than overclaiming.
 
-| Method | Description |
-|---|---|
-| `__init__(udp_socket, peer_addr, timeout)` | Stores socket, server endpoint, and timeout. |
-| `send(data)` | Sends size header then file chunks to the server. |
-| `signal_ready()` | Sends `READY` probe so server knows client address (download). |
-| `receive()` | Reads size header then chunks; returns file bytes. |
-| `close()` | Closes the UDP socket. |
+- **ABOR** replies `226` but does not truly interrupt a transfer mid-window.
+- **rwnd** is a fixed local constant, not a value advertised by the receiver over the wire — despite the name, it is not a negotiated window.
+- **Password hashes** are unsalted SHA-256 — fine for a course project, not production-grade.
+- **generate_unique_name** checks existence against the process working directory, not the FTP root (harmless because UUID collisions are astronomically unlikely).
 
 ---
 
-## Typical Transfer Flow
-
-### Upload (`STOR filename`)
-
-1. Client reads `storage/filename`, sends `STOR filename` over TCP
-2. Server opens UDP socket, replies `150` with data endpoint
-3. Client sends file data over UDP (size header + chunks)
-4. Server saves to `data/root/filename`
-5. Server replies `226 Transfer complete.` over TCP
-
-### Download (`RETR filename`)
-
-1. Client sends `RETR filename` over TCP
-2. Server opens UDP socket, replies `150` with endpoint
-3. Client sends `READY` probe, server sends file over UDP
-4. Client saves to `storage/filename`
-5. Server replies `226 Transfer complete.` over TCP
-
----
-
-## File Layout
-
-```
-hybrid_ftp/
-├── client/
-│   ├── client.py      # TCP client + CLI
-│   ├── data.py        # UDP send/receive (client side)
-│   └── storage/       # Local files for STOR/RETR
-├── server/
-│   ├── server.py      # TCP server entry point
-│   ├── control.py     # Command dispatch + handlers
-│   ├── session.py     # Per-client session state
-│   ├── auth.py        # User authentication
-│   ├── filesystem.py  # File read/write on disk
-│   ├── data.py        # UDP file transfer (server side)
-│   └── reply_code.py  # FTP reply code constants
-└── data/              # users.json + root/ for uploaded files
-```
+*Line count is SLOC (comments and blanks excluded). Reflects the current codebase.*
