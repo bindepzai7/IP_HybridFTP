@@ -183,6 +183,21 @@ def test_verify_hash_verbose_prints_match(logged_in_client, sample_file, capsys)
     assert "SHA-256 MATCH" in capsys.readouterr().out
 
 
+def test_recovers_after_failed_transfer(logged_in_client, sample_file):
+    """A failed transfer must not leave a stale data channel that breaks the next
+    one with 425. Regression test for the auto-PASV / stale-channel bug."""
+    c = logged_in_client
+    name, content = sample_file
+    c.stor(name, name)
+
+    with pytest.raises(Exception):
+        c.retr("no_such_file_xyz.txt", "x.txt")   # fails -> must still clean up
+
+    c.retr(name, "e2e_download.txt")               # must succeed via fresh auto-PASV
+    with open(os.path.join(STORAGE_DIR, "e2e_download.txt"), "rb") as f:
+        assert f.read() == content
+
+
 def test_hash_matches_after_upload(logged_in_client, sample_file):
     c = logged_in_client
     name, _ = sample_file

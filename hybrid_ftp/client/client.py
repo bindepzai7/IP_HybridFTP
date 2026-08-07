@@ -182,117 +182,130 @@ class FTPClient:
 
     def retr(self, remote_name, local_filename):
         self._ensure_data_channel()
-        
-        local_filename = local_filename or remote_name
-        local_path = self._storage_path(local_filename)
-        
-        resp = self._send_cmd(f"RETR {remote_name}")
-        self._expect(resp, "125", "150")
-        data_bytes = self.data.receive()
-        raw_data = TransferEngine.decode_data(data_bytes, self.mode)
-        if self.type == "A":
-            raw_data = AsciiCodec.to_local(raw_data)
+        try:
+            local_filename = local_filename or remote_name
+            local_path = self._storage_path(local_filename)
 
-        with open(local_path, "wb") as f:
-            f.write(raw_data)
-        print(f"[Client] Saved → storage/{local_filename}")
+            resp = self._send_cmd(f"RETR {remote_name}")
+            self._expect(resp, "125", "150")
+            data_bytes = self.data.receive()
+            raw_data = TransferEngine.decode_data(data_bytes, self.mode)
+            if self.type == "A":
+                raw_data = AsciiCodec.to_local(raw_data)
 
-        self._finish_transfer()
-        self._maybe_verify_hash(remote_name, local_path)
-        
+            with open(local_path, "wb") as f:
+                f.write(raw_data)
+            print(f"[Client] Saved → storage/{local_filename}")
+
+            self._finish_transfer()
+            self._maybe_verify_hash(remote_name, local_path)
+        finally:
+            # Always tear down, even on error, so a failed transfer doesn't
+            # leave a stale channel that blocks the next auto-PASV (-> 425).
+            self.disconnect_data()
+
     def stor(self, local_filename, remote_name):
         self._ensure_data_channel()
-        
-        local_path = self._storage_path(local_filename)
-        remote_name = remote_name or os.path.basename(local_filename)
-        
-        if not os.path.isfile(local_path):
-            raise FileNotFoundError(f"Not found: {local_path}")
-        
-        with open(local_path, "rb") as f:
-            raw_data = f.read()
-        if self.type == "A":
-            raw_data = AsciiCodec.to_network(raw_data)
+        try:
+            local_path = self._storage_path(local_filename)
+            remote_name = remote_name or os.path.basename(local_filename)
 
-        payload = TransferEngine.encode_data(raw_data, self.mode)
+            if not os.path.isfile(local_path):
+                raise FileNotFoundError(f"Not found: {local_path}")
 
-        resp = self._send_cmd(f"STOR {remote_name}")
+            with open(local_path, "rb") as f:
+                raw_data = f.read()
+            if self.type == "A":
+                raw_data = AsciiCodec.to_network(raw_data)
 
-        self._expect(resp, "125", "150")
-        self.data.send(payload)
-        print(f"[Client] Sent {len(payload)} (encoded) bytes → {remote_name}")
-        self._finish_transfer()
-        self._maybe_verify_hash(remote_name, local_path)
+            payload = TransferEngine.encode_data(raw_data, self.mode)
+
+            resp = self._send_cmd(f"STOR {remote_name}")
+
+            self._expect(resp, "125", "150")
+            self.data.send(payload)
+            print(f"[Client] Sent {len(payload)} (encoded) bytes → {remote_name}")
+            self._finish_transfer()
+            self._maybe_verify_hash(remote_name, local_path)
+        finally:
+            self.disconnect_data()
     
     def list_dir(self, path: str = ""):
         self._ensure_data_channel()
-        
-        cmd = f"LIST {path}".strip()
-        resp = self._send_cmd(cmd)
-        self._expect(resp, "125", "150")
-        
-        raw = self.data.receive()
-        print(raw.decode("utf-8", errors="replace"))
-        
-        self._finish_transfer()
-    
+        try:
+            cmd = f"LIST {path}".strip()
+            resp = self._send_cmd(cmd)
+            self._expect(resp, "125", "150")
+
+            raw = self.data.receive()
+            print(raw.decode("utf-8", errors="replace"))
+
+            self._finish_transfer()
+        finally:
+            self.disconnect_data()
+
     def nlst(self, path: str=""):
         self._ensure_data_channel()
+        try:
+            cmd = f"NLST {path}".strip()
+            resp = self._send_cmd(cmd)
+            if not resp.startswith("150"):
+                return
 
-        cmd = f"NLST {path}".strip()
-        resp = self._send_cmd(cmd)
-        if not resp.startswith("150"):
-            return
+            raw = self.data.receive()
+            print(raw.decode("utf-8", errors="replace"))
 
-        raw = self.data.receive()
-        print(raw.decode("utf-8", errors="replace"))
-
-        final = self.control.read_line()
-        print(final)
-        self.disconnect_data()
+            final = self.control.read_line()
+            print(final)
+        finally:
+            self.disconnect_data()
         
     def appe(self, local_filename, remote_name):
         self._ensure_data_channel()
-        
-        local_path = self._storage_path(local_filename)
-        remote_name = remote_name or os.path.basename(local_filename)
-        
-        if not os.path.isfile(local_path):
-            raise FileNotFoundError(f"Not found: {local_path}")
-        
-        with open(local_path, "rb") as f:
-            raw_data = f.read()
-        if self.type == "A":
-            raw_data = AsciiCodec.to_network(raw_data)
-        payload = TransferEngine.encode_data(raw_data, self.mode)
-        resp = self._send_cmd(f"APPE {remote_name}")
-        
-        self._expect(resp, "125", "150")
-        self.data.send(payload)
-        print(f"[Client] Appended {len(payload)} bytes → {remote_name}")
-        self._finish_transfer()
-        
+        try:
+            local_path = self._storage_path(local_filename)
+            remote_name = remote_name or os.path.basename(local_filename)
+
+            if not os.path.isfile(local_path):
+                raise FileNotFoundError(f"Not found: {local_path}")
+
+            with open(local_path, "rb") as f:
+                raw_data = f.read()
+            if self.type == "A":
+                raw_data = AsciiCodec.to_network(raw_data)
+            payload = TransferEngine.encode_data(raw_data, self.mode)
+            resp = self._send_cmd(f"APPE {remote_name}")
+
+            self._expect(resp, "125", "150")
+            self.data.send(payload)
+            print(f"[Client] Appended {len(payload)} bytes → {remote_name}")
+            self._finish_transfer()
+        finally:
+            self.disconnect_data()
+
     def stou(self, local_filename):
         self._ensure_data_channel()
-        
-        local_path = self._storage_path(local_filename)
-        
-        if not os.path.isfile(local_path):
-            raise FileNotFoundError(f"Not found: {local_path}")
-        
-        with open(local_path, "rb") as f:
-            raw_data = f.read()
-        if self.type == "A":
-            raw_data = AsciiCodec.to_network(raw_data)
+        try:
+            local_path = self._storage_path(local_filename)
 
-        payload = TransferEngine.encode_data(raw_data, self.mode)
+            if not os.path.isfile(local_path):
+                raise FileNotFoundError(f"Not found: {local_path}")
 
-        resp = self._send_cmd("STOU")
-        
-        self._expect(resp, "125", "150")
-        self.data.send(payload)
-        print(f"[Client] Sent {len(payload)} bytes (STOU)")
-        self._finish_transfer()
+            with open(local_path, "rb") as f:
+                raw_data = f.read()
+            if self.type == "A":
+                raw_data = AsciiCodec.to_network(raw_data)
+
+            payload = TransferEngine.encode_data(raw_data, self.mode)
+
+            resp = self._send_cmd("STOU")
+
+            self._expect(resp, "125", "150")
+            self.data.send(payload)
+            print(f"[Client] Sent {len(payload)} bytes (STOU)")
+            self._finish_transfer()
+        finally:
+            self.disconnect_data()
         
     def abort(self):
         print("[Client] Sending ABOR...")
