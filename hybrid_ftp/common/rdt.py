@@ -33,6 +33,7 @@ class ReliableUDP:
         send_base = 0
         next_seq_num = 0
         window_buffer: Dict[int, dict] = {}
+        cnt_loss = 0
 
         while send_base < total_packets:
             next_seq_num = self._fill_window(packets, window_buffer, send_base, next_seq_num, total_packets)
@@ -43,9 +44,10 @@ class ReliableUDP:
                 if newly_acked:
                     self._update_cwnd_on_ack()
                 
-            self._check_timeouts(window_buffer)
+            self._check_timeouts(window_buffer, cnt_loss)
 
         self._send_fin(next_seq_num)
+        print("LOSS PACKET: ", cnt_loss)
 
     def recv(self) -> bytes:
         rcv_base = 0
@@ -117,7 +119,7 @@ class ReliableUDP:
         self.ssthresh = max(int(self.cwnd) // 2, 1)
         self.cwnd = 1.0
 
-    def _check_timeouts(self, window_buffer: dict) -> None:
+    def _check_timeouts(self, window_buffer: dict, cnt_loss) -> None:
         current_time = time.time()
         timeout_occurred = False
         
@@ -130,6 +132,7 @@ class ReliableUDP:
                         raise ConnectionError(f"Max retries exceeded for packet {seq}")
                     
                     logging.debug(f"Timeout for packet {seq}. Retransmitting...")
+                    cnt_loss+=1
                     self.send_packet(info['packet'])
                     info['time'] = current_time
                     info['retries'] += 1
